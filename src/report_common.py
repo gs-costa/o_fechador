@@ -111,6 +111,56 @@ RETURN_CFOPS = (
     "2411",
 )
 
+ITEM_HEADERS = [
+    "market_place",
+    "chave_nfe",
+    "numero_nf",
+    "data_emissao",
+    "item",
+    "codigo",
+    "ean",
+    "descricao",
+    "ncm",
+    "cfop",
+    "unidade",
+    "quantidade",
+    "valor_unitario",
+    "valor_total",
+    "destinatario_doc",
+    "destinatario_uf",
+    "arquivo",
+]
+
+ITEMS_SHEET = "Items"
+CUSTOS_SHEET = "Custos Produtos"
+PRODUCT_COST_HEADERS = ["codigo", "ean", "descricao", "custo", "chave"]
+ITEMS_ADDED_COLUMNS = ["custo_unitario", "custo_total"]
+
+ITEM_MONEY_COLUMNS = {"valor_unitario", "valor_total", "custo_unitario", "custo_total"}
+ITEM_TEXT_COLUMNS = {"chave_nfe", "codigo", "ean", "destinatario_doc"}
+
+ITEM_WIDTHS = {
+    "market_place": 16,
+    "chave_nfe": 36,
+    "numero_nf": 10,
+    "data_emissao": 22,
+    "codigo": 14,
+    "ean": 16,
+    "descricao": 36,
+    "cfop": 8,
+    "quantidade": 12,
+    "custo_unitario": 14,
+    "custo_total": 14,
+}
+
+CUSTOS_WIDTHS = {
+    "codigo": 14,
+    "ean": 16,
+    "descricao": 36,
+    "custo": 14,
+    "chave": 24,
+}
+
 
 def candaru_rate_for(marketplace: str) -> float:
     name = marketplace.strip().casefold()
@@ -173,6 +223,26 @@ def cfop_by_invoice(items: list[dict[str, object]]) -> dict[str, str]:
         if key not in result and item.get("cfop"):
             result[key] = str(item.get("cfop"))
     return result
+
+
+def product_key(codigo: object, ean: object) -> tuple[str, str]:
+    return (str(codigo or "").strip(), str(ean or "").strip())
+
+
+def deduplicate_products(items: list[dict[str, object]]) -> list[dict[str, str]]:
+    """Return unique products keyed by (codigo, ean), preserving first description."""
+    seen: dict[tuple[str, str], dict[str, str]] = {}
+    for item in items:
+        codigo, ean = product_key(item.get("codigo"), item.get("ean"))
+        key = (codigo, ean)
+        if key in seen:
+            continue
+        seen[key] = {
+            "codigo": codigo,
+            "ean": ean,
+            "descricao": str(item.get("descricao", "")).strip(),
+        }
+    return [seen[key] for key in sorted(seen)]
 
 
 def style_header_cell(cell) -> None:
@@ -241,3 +311,14 @@ def sum_cancelled_sales(
         f'=SUMIFS({sum_rng},{status_rng},"*Cancel*")'
         f'+SUMIFS({sum_rng},{natureza_rng},"*Cancel*")'
     )
+
+
+def items_range(items_col: dict[str, str], column: str, last_row: int) -> str:
+    col = items_col[column]
+    return f"{ITEMS_SHEET}!${col}$2:${col}${last_row}"
+
+
+def sum_items_column(items_col: dict[str, str], column: str, last_row: int) -> str:
+    if last_row < 2:
+        return "=0"
+    return f"=SUM({items_range(items_col, column, last_row)})"

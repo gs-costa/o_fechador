@@ -28,6 +28,7 @@ from openpyxl.utils import get_column_letter
 # build_report lives next to this script; ensure it is importable when run directly.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from build_report import build_report
+from report_common import ITEM_HEADERS
 
 NFE_NS = {"nfe": "http://www.portalfiscal.inf.br/nfe"}
 
@@ -53,27 +54,6 @@ INVOICE_HEADERS = [
     "status",
     "arquivo",
 ]
-
-ITEM_HEADERS = [
-    "market_place",
-    "chave_nfe",
-    "numero_nf",
-    "data_emissao",
-    "item",
-    "codigo",
-    "ean",
-    "descricao",
-    "ncm",
-    "cfop",
-    "unidade",
-    "quantidade",
-    "valor_unitario",
-    "valor_total",
-    "destinatario_doc",
-    "destinatario_uf",
-    "arquivo",
-]
-
 
 def _text(parent: ET.Element | None, path: str, default: str = "") -> str:
     if parent is None:

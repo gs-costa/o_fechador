@@ -32,6 +32,7 @@ from report_common import (
     sum_cancelled_sales,
     sum_column,
     sum_columns,
+    sum_items_column,
     sum_return_cfops,
     sumifs_wildcard,
 )
@@ -49,6 +50,8 @@ def build_dre(
     last_row: int,
     *,
     sales_tax_rate_cell: str = "Parametros!$G$3",
+    items_col: dict[str, str] | None = None,
+    items_last_row: int = 0,
 ) -> None:
     """Write the DRE sheet (mutates *ws* in place)."""
     ws["A1"] = "DRE - Demonstração do Resultado do Exercício"
@@ -79,7 +82,7 @@ def build_dre(
         (
             "CUSTOS VARIÁVEIS",
             [
-                ("(-) CMV (Custo das Mercadorias Vendidas)", "item", None, 1),
+                ("(-) CMV (Custo das Mercadorias Vendidas)", "item", "cmv", 1),
                 ("(-) Taxas de Marketplace", "item", "taxas_marketplace", 1),
                 ("(-) Taxas de Envio/Frete Pago", "item", "frete", 1),
                 ("(-) Custo com Expedição", "item", None, 1),
@@ -123,7 +126,6 @@ def build_dre(
     ]
 
     manual_keys = {
-        "(-) CMV (Custo das Mercadorias Vendidas)": "cmv",
         "(-) Custo com Expedição": "expedicao",
         "(-) Embalagens": "embalagens",
         "(-) Consultoria": "consultoria",
@@ -167,12 +169,19 @@ def build_dre(
     def ref(key: str) -> str:
         return _row_ref(key_to_row[key])
 
+    cmv_formula = (
+        sum_items_column(items_col, "custo_total", items_last_row)
+        if items_col
+        else "=0"
+    )
+
     data_formulas: dict[str, str] = {
         "faturamento_bruto": sum_columns(det_col, [SRC_FATURADO, SRC_FRETE], last_row),
         "vendas_canceladas": sum_cancelled_sales(det_col, SRC_FATURADO, last_row),
         "devolucoes": sum_return_cfops(det_col, SRC_FATURADO, last_row),
         "descontos": sum_column(det_col, SRC_DESCONTO, last_row),
         "impostos_vendas": f"={ref('receita_bruta_ajustada')}*{sales_tax_rate_cell}",
+        "cmv": cmv_formula,
         "taxas_marketplace": sum_column(det_col, "CANDARU", last_row),
         "frete": sum_column(det_col, SRC_FRETE, last_row),
         "ads_ml": sumifs_wildcard(
@@ -213,7 +222,7 @@ def build_dre(
     )
     ws[f"B{key_to_row['lucro_bruto']}"] = (
         f"={ref('receita_liquida')}"
-        f"-B{key_to_row['cmv']}"
+        f"-{ref('cmv')}"
         f"-{ref('taxas_marketplace')}"
         f"-{ref('frete')}"
         f"-B{key_to_row['expedicao']}"
@@ -250,9 +259,10 @@ def build_dre(
         row=note_row,
         column=1,
         value=(
-            "Linhas com valor 0 podem ser preenchidas manualmente (CMV, despesas operacionais, "
-            "resultado financeiro). Demais valores são calculados a partir da aba Detalhado. "
-            f"Impostos sobre vendas usam a taxa em {sales_tax_rate_cell}."
+            "Preencha os custos unitários na aba Custos Produtos; o CMV é calculado "
+            "automaticamente na aba Items (quantidade x custo). Demais linhas com valor 0 "
+            "podem ser preenchidas manualmente. Valores de receita e taxas vêm da aba "
+            f"Detalhado. Impostos sobre vendas usam a taxa em {sales_tax_rate_cell}."
         ),
     )
     ws.cell(row=note_row, column=1).font = NOTE_FONT
@@ -284,7 +294,27 @@ def add_dre_to_workbook(
         del wb["DRE"]
     ws_dre = wb.create_sheet("DRE")
     sales_tax_cell = "Parametros!$G$3" if "Parametros" in wb.sheetnames else "0.04"
-    build_dre(ws_dre, det_col, last_row, sales_tax_rate_cell=sales_tax_cell)
+
+    items_col: dict[str, str] | None = None
+    items_last_row = 0
+    if "Items" in wb.sheetnames:
+        ws_items = wb["Items"]
+        headers = [cell.value for cell in ws_items[1]]
+        items_col = {
+            str(name): get_column_letter(idx)
+            for idx, name in enumerate(headers, start=1)
+            if name
+        }
+        items_last_row = ws_items.max_row
+
+    build_dre(
+        ws_dre,
+        det_col,
+        last_row,
+        sales_tax_rate_cell=sales_tax_cell,
+        items_col=items_col,
+        items_last_row=items_last_row,
+    )
 
     dest = output_path or workbook_path
     dest.parent.mkdir(parents=True, exist_ok=True)

@@ -9,6 +9,8 @@ and ``Items``) and writes a new workbook with:
   - Parametros: editable rates per marketplace (ADS / Afiliado / CANDARU) and global
                 rates (IRPJ/CSLL, impostos sobre vendas). Change a rate and the
                 whole report recalculates.
+  - Items:      line items from the NF-e workbook, with custo_unitario / custo_total.
+  - Custos Produtos: deduplicated product list (codigo + ean) for manual cost entry.
   - DRE:        Demonstração do Resultado do Exercício (see ``build_dre.py``).
 
 Only values that can be derived from the NF-e are included. KPIs that depend on
@@ -35,16 +37,20 @@ from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.worksheet import Worksheet
 
 from build_dre import build_dre
+from build_items import build_custos_produtos, build_items
 from report_common import (
     ADDED_COLUMNS,
     CANDARU_RATE_DEFAULT,
+    CUSTOS_SHEET,
     DEFAULT_ADS_RATES,
     DEFAULT_AFILIADO_RATES,
     DEFAULT_IRPJ_RATE,
     DEFAULT_SALES_TAX_RATE,
     DET_WIDTHS,
     INT_FMT,
+    ITEMS_SHEET,
     LABEL_FONT,
+    ITEM_HEADERS,
     MONEY_COLUMNS,
     MONEY_FMT,
     NOTE_FONT,
@@ -64,6 +70,7 @@ from report_common import (
     as_cell,
     candaru_rate_for,
     cfop_by_invoice,
+    deduplicate_products,
     load_result,
     num,
     style_header_cell,
@@ -277,6 +284,7 @@ def build_report(
         raise ValueError("No invoices found in the input workbook.")
 
     invoice_headers = [h for h in invoices[0].keys() if h]
+    item_headers = [h for h in items[0].keys() if h] if items else list(ITEM_HEADERS)
     invoice_cfops = cfop_by_invoice(items)
 
     marketplaces = sorted(
@@ -296,6 +304,8 @@ def build_report(
     assert ws_resumo is not None
     ws_resumo.title = "Resumo"
     ws_det = wb.create_sheet("Detalhado")
+    ws_custos = wb.create_sheet(CUSTOS_SHEET)
+    ws_items = wb.create_sheet(ITEMS_SHEET)
     ws_par = wb.create_sheet("Parametros")
     ws_dre = wb.create_sheet("DRE")
 
@@ -305,12 +315,16 @@ def build_report(
     det_col, last_row = build_detalhado(
         ws_det, invoices, invoice_headers, invoice_cfops, global_rate_cells
     )
+    custos_col, _ = build_custos_produtos(ws_custos, items)
+    items_col, items_last_row = build_items(ws_items, items, item_headers, custos_col)
     build_resumo(ws_resumo, marketplaces, det_col)
     build_dre(
         ws_dre,
         det_col,
         last_row,
         sales_tax_rate_cell=f"Parametros!{global_rate_cells['sales_tax']}",
+        items_col=items_col,
+        items_last_row=items_last_row,
     )
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -319,6 +333,7 @@ def build_report(
     return {
         "invoices": len(invoices),
         "items": len(items),
+        "products": len(deduplicate_products(items)) if items else 0,
         "marketplaces": marketplaces,
     }
 
@@ -358,6 +373,7 @@ def main() -> None:
         ", ".join(marketplaces) if isinstance(marketplaces, list) else ""
     )
     print(f"Report built from {info['invoices']} invoices ({info['items']} items).")
+    print(f"Products in cost sheet: {info.get('products', 0)}")
     print(f"Marketplaces: {marketplaces_text}")
     print(f"Report saved to: {output_path.resolve()}")
 
