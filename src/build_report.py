@@ -30,6 +30,7 @@ import argparse
 import sys
 from datetime import datetime
 from pathlib import Path
+from typing import BinaryIO
 
 from openpyxl import Workbook
 from openpyxl.styles import Font
@@ -40,6 +41,7 @@ from build_dre import build_dre
 from build_items import build_custos_produtos, build_items
 from report_common import (
     ADDED_COLUMNS,
+    BORDER,
     CANDARU_RATE_DEFAULT,
     CUSTOS_SHEET,
     DEFAULT_ADS_RATES,
@@ -48,9 +50,9 @@ from report_common import (
     DEFAULT_SALES_TAX_RATE,
     DET_WIDTHS,
     INT_FMT,
+    ITEM_HEADERS,
     ITEMS_SHEET,
     LABEL_FONT,
-    ITEM_HEADERS,
     MONEY_COLUMNS,
     MONEY_FMT,
     NOTE_FONT,
@@ -66,7 +68,6 @@ from report_common import (
     TEXT_COLUMNS,
     TITLE_FONT,
     TOTAL_FILL,
-    BORDER,
     as_cell,
     candaru_rate_for,
     cfop_by_invoice,
@@ -89,7 +90,9 @@ def build_parametros(
 ) -> dict[str, str]:
     ws["A1"] = "Taxas por Marketplace"
     ws["A1"].font = TITLE_FONT
-    for col, name in zip("ABCD", ("Marketplace", "Taxa ADS", "Taxa Afiliado", "Taxa CANDARU")):
+    for col, name in zip(
+        "ABCD", ("Marketplace", "Taxa ADS", "Taxa Afiliado", "Taxa CANDARU")
+    ):
         cell = ws[f"{col}2"]
         cell.value = name
         style_header_cell(cell)
@@ -275,13 +278,13 @@ def build_resumo(
     ws.cell(row=note_row, column=label_col).font = NOTE_FONT
 
 
-def build_report(
-    input_path: Path,
-    output_path: Path,
+def build_report_from_data(
+    invoices: list[dict[str, object]],
+    items: list[dict[str, object]],
+    output: Path | BinaryIO,
 ) -> dict[str, object]:
-    invoices, items = load_result(input_path)
     if not invoices:
-        raise ValueError("No invoices found in the input workbook.")
+        raise ValueError("No invoices found in the input data.")
 
     invoice_headers = [h for h in invoices[0].keys() if h]
     item_headers = [h for h in items[0].keys() if h] if items else list(ITEM_HEADERS)
@@ -327,8 +330,9 @@ def build_report(
         items_last_row=items_last_row,
     )
 
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    wb.save(output_path)
+    if isinstance(output, Path):
+        output.parent.mkdir(parents=True, exist_ok=True)
+    wb.save(output)
 
     return {
         "invoices": len(invoices),
@@ -336,6 +340,14 @@ def build_report(
         "products": len(deduplicate_products(items)) if items else 0,
         "marketplaces": marketplaces,
     }
+
+
+def build_report(
+    input_path: Path,
+    output_path: Path,
+) -> dict[str, object]:
+    invoices, items = load_result(input_path)
+    return build_report_from_data(invoices, items, output_path)
 
 
 def build_parser() -> argparse.ArgumentParser:

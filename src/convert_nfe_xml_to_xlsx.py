@@ -18,8 +18,10 @@ from __future__ import annotations
 import argparse
 import sys
 import xml.etree.ElementTree as ET
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from typing import BinaryIO
 
 from openpyxl import Workbook
 from openpyxl.styles import Font
@@ -54,6 +56,15 @@ INVOICE_HEADERS = [
     "status",
     "arquivo",
 ]
+
+
+@dataclass
+class ConversionResult:
+    invoices: list[dict[str, str | float]]
+    items: list[dict[str, str | float]]
+    errors: list[str]
+    processed: list[str]
+
 
 def _text(parent: ET.Element | None, path: str, default: str = "") -> str:
     if parent is None:
@@ -173,7 +184,7 @@ def _write_sheet(ws, headers: list[str], rows: list[dict[str, str | float]]) -> 
 def write_consolidated_xlsx(
     invoices: list[dict[str, str | float]],
     items: list[dict[str, str | float]],
-    output_path: Path,
+    output: Path | BinaryIO,
 ) -> None:
     wb = Workbook()
     ws_inv = wb.active
@@ -183,8 +194,9 @@ def write_consolidated_xlsx(
     ws_items = wb.create_sheet("Items")
     _write_sheet(ws_items, ITEM_HEADERS, items)
 
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    wb.save(output_path)
+    if isinstance(output, Path):
+        output.parent.mkdir(parents=True, exist_ok=True)
+    wb.save(output)
 
 
 def write_single_xlsx(
@@ -212,12 +224,8 @@ def discover_marketplace_folders(root: Path) -> list[tuple[str, Path]]:
     return marketplaces
 
 
-def convert_marketplaces(
-    root_dir: Path,
-    output_path: Path,
-    *,
-    per_file: bool = False,
-) -> tuple[int, int, list[str], list[str]]:
+def parse_marketplaces(root_dir: Path, *, per_file: bool = False) -> ConversionResult:
+    """Parse all NF-e XML files under *root_dir* without writing consolidated output."""
     marketplaces = discover_marketplace_folders(root_dir)
 
     all_invoices: list[dict[str, str | float]] = []
@@ -256,8 +264,28 @@ def convert_marketplaces(
     if not all_invoices:
         raise FileNotFoundError(f"No invoices converted from {root_dir}")
 
-    write_consolidated_xlsx(all_invoices, all_items, output_path)
-    return len(all_invoices), len(all_items), all_errors, processed
+    return ConversionResult(
+        invoices=all_invoices,
+        items=all_items,
+        errors=all_errors,
+        processed=processed,
+    )
+
+
+def convert_marketplaces(
+    root_dir: Path,
+    output_path: Path,
+    *,
+    per_file: bool = False,
+) -> tuple[int, int, list[str], list[str]]:
+    result = parse_marketplaces(root_dir, per_file=per_file)
+    write_consolidated_xlsx(result.invoices, result.items, output_path)
+    return (
+        len(result.invoices),
+        len(result.items),
+        result.errors,
+        result.processed,
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
