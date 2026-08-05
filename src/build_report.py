@@ -7,7 +7,9 @@ and ``Items``) and writes a new workbook with:
   - Detalhado:  every column from the Invoices sheet (kept verbatim) followed by the
                 appended calculated columns (live Excel formulas).
   - Parametros: editable rates per marketplace (ADS / Afiliado / CANDARU) and global
-                rate (IRPJ/CSLL). Change a rate and the whole report recalculates.
+                rates (IRPJ/CSLL, impostos sobre vendas). Change a rate and the
+                whole report recalculates.
+  - DRE:        Demonstração do Resultado do Exercício (see ``build_dre.py``).
 
 Only values that can be derived from the NF-e are included. KPIs that depend on
 external data (Depositado, Custo Produto, Liquido, Margem, Frete Primario) are not
@@ -27,158 +29,48 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-from openpyxl import Workbook, load_workbook
-from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+from openpyxl import Workbook
+from openpyxl.styles import Font
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.worksheet import Worksheet
 
-# Default assumption rates (editable later in the Parametros sheet).
-DEFAULT_ADS_RATES: dict[str, float] = {
-    "Mercado Livre": 0.0597444848231328,
-    "Mercado Livre Full": 0.0597444848231328,
-    "Shopee": 0.0816910844699686,
-    "Shopee Full": 0.0816910844699686,
-    "TikTok": 0.0808623294375085,
-}
-DEFAULT_AFILIADO_RATES: dict[str, float] = {
-    "Mercado Livre": 0.0102977242994446,
-    "Mercado Livre Full": 0.0102977242994446,
-    "Shopee": 0.031148329972608,
-    "Shopee Full": 0.031148329972608,
-    "TikTok": 0.0924554265462002,
-}
-DEFAULT_IRPJ_RATE = 0.0308
-CANDARU_RATE_LOW = 0.03
-CANDARU_RATE_DEFAULT = 0.07
-CANDARU_LOW_MARKETPLACE_SUBSTRINGS = ("amazon b2b", "tiktok shop")
-
-MONEY_FMT = "R$ #,##0.00"
-PCT_FMT = "0.00%"
-INT_FMT = "#,##0"
-
-HEADER_FILL = PatternFill("solid", fgColor="1F4E78")
-HEADER_FONT = Font(bold=True, color="FFFFFF")
-TOTAL_FILL = PatternFill("solid", fgColor="D9E1F2")
-LABEL_FONT = Font(bold=True)
-TITLE_FONT = Font(bold=True, size=14, color="1F4E78")
-THIN = Side(style="thin", color="BFBFBF")
-BORDER = Border(left=THIN, right=THIN, top=THIN, bottom=THIN)
+from build_dre import build_dre
+from report_common import (
+    ADDED_COLUMNS,
+    CANDARU_RATE_DEFAULT,
+    DEFAULT_ADS_RATES,
+    DEFAULT_AFILIADO_RATES,
+    DEFAULT_IRPJ_RATE,
+    DEFAULT_SALES_TAX_RATE,
+    DET_WIDTHS,
+    INT_FMT,
+    LABEL_FONT,
+    MONEY_COLUMNS,
+    MONEY_FMT,
+    NOTE_FONT,
+    PCT_FMT,
+    SRC_BASE_COMISSAO,
+    SRC_BASE_ICMS,
+    SRC_COFINS,
+    SRC_DIFAL,
+    SRC_FATURADO,
+    SRC_ICMS,
+    SRC_MARKETPLACE,
+    SRC_PIS,
+    TEXT_COLUMNS,
+    TITLE_FONT,
+    TOTAL_FILL,
+    BORDER,
+    as_cell,
+    candaru_rate_for,
+    cfop_by_invoice,
+    load_result,
+    num,
+    style_header_cell,
+)
 
 # The Detalhado sheet keeps every column from the Invoices sheet (same names and
 # order) and then appends the calculated columns below.
-ADDED_COLUMNS = [
-    "CFOP",
-    "ADS",
-    "Afiliado",
-    "IRPJ/CSLL",
-    "CANDARU",
-]
-
-# Kept (Invoices) columns referenced by the calculated formulas.
-SRC_MARKETPLACE = "market_place"
-SRC_FATURADO = "valor_produtos"
-SRC_BASE_COMISSAO = "valor_base_comissao"
-SRC_BASE_ICMS = "valor_icms_bc"
-SRC_ICMS = "valor_icms"
-SRC_DIFAL = "valor_icms_difal"
-SRC_PIS = "valor_pis"
-SRC_COFINS = "valor_cofins"
-
-# Columns formatted as currency (kept + appended).
-MONEY_COLUMNS = {
-    "valor_produtos",
-    "valor_frete",
-    "valor_desconto",
-    "valor_nf",
-    "valor_base_comissao",
-    "valor_icms",
-    "valor_icms_difal",
-    "valor_icms_bc",
-    "valor_pis",
-    "valor_cofins",
-    "ADS",
-    "Afiliado",
-    "IRPJ/CSLL",
-    "CANDARU",
-}
-# Columns kept as text to preserve long codes / leading zeros.
-TEXT_COLUMNS = {"chave_nfe", "destinatario_doc"}
-
-# Preferred column widths on the Detalhado sheet.
-DET_WIDTHS = {
-    "market_place": 16,
-    "chave_nfe": 36,
-    "numero": 10,
-    "serie": 7,
-    "data_emissao": 22,
-    "natureza_operacao": 20,
-    "destinatario_doc": 16,
-    "destinatario_uf": 8,
-    "status": 22,
-    "arquivo": 30,
-}
-
-
-def candaru_rate_for(marketplace: str) -> float:
-    name = marketplace.strip().casefold()
-    if any(sub in name for sub in CANDARU_LOW_MARKETPLACE_SUBSTRINGS):
-        return CANDARU_RATE_LOW
-    return CANDARU_RATE_DEFAULT
-
-
-def _num(value: object) -> float:
-    if value is None or value == "":
-        return 0.0
-    if isinstance(value, (int, float)):
-        return float(value)
-    text = str(value).strip().replace(",", ".")
-    try:
-        return float(text)
-    except ValueError:
-        return 0.0
-
-
-def _as_cell(value: object) -> str | int | float:
-    if value is None:
-        return ""
-    if isinstance(value, (int, float, str)):
-        return value
-    return str(value)
-
-
-def _rows_as_dicts(ws: Worksheet) -> list[dict[str, object]]:
-    rows = ws.iter_rows(values_only=True)
-    try:
-        headers = [str(h) if h is not None else "" for h in next(rows)]
-    except StopIteration:
-        return []
-    return [dict(zip(headers, row)) for row in rows]
-
-
-def load_result(path: Path) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
-    wb = load_workbook(path, read_only=True, data_only=True)
-    if "Invoices" not in wb.sheetnames:
-        raise ValueError(f"'Invoices' sheet not found in {path}")
-    invoices = _rows_as_dicts(wb["Invoices"])
-    items = _rows_as_dicts(wb["Items"]) if "Items" in wb.sheetnames else []
-    wb.close()
-    return invoices, items
-
-
-def cfop_by_invoice(items: list[dict[str, object]]) -> dict[str, str]:
-    result: dict[str, str] = {}
-    for item in items:
-        key = str(item.get("chave_nfe", ""))
-        if key not in result and item.get("cfop"):
-            result[key] = str(item.get("cfop"))
-    return result
-
-
-def _style_header_cell(cell) -> None:
-    cell.fill = HEADER_FILL
-    cell.font = HEADER_FONT
-    cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-    cell.border = BORDER
 
 
 def build_parametros(
@@ -193,7 +85,7 @@ def build_parametros(
     for col, name in zip("ABCD", ("Marketplace", "Taxa ADS", "Taxa Afiliado", "Taxa CANDARU")):
         cell = ws[f"{col}2"]
         cell.value = name
-        _style_header_cell(cell)
+        style_header_cell(cell)
 
     for idx, mp in enumerate(marketplaces, start=3):
         ws[f"A{idx}"] = mp
@@ -204,20 +96,24 @@ def build_parametros(
         ws[f"C{idx}"].number_format = PCT_FMT
         ws[f"D{idx}"].number_format = PCT_FMT
 
-    # Global rate block (referenced by Detalhado formulas).
     ws["F2"] = "Taxa IRPJ/CSLL"
     ws["F2"].font = LABEL_FONT
     ws["G2"] = DEFAULT_IRPJ_RATE
     ws["G2"].number_format = PCT_FMT
 
+    ws["F3"] = "Taxa Impostos sobre Vendas"
+    ws["F3"].font = LABEL_FONT
+    ws["G3"] = DEFAULT_SALES_TAX_RATE
+    ws["G3"].number_format = PCT_FMT
+
     ws.column_dimensions["A"].width = 22
     ws.column_dimensions["B"].width = 14
     ws.column_dimensions["C"].width = 14
     ws.column_dimensions["D"].width = 14
-    ws.column_dimensions["F"].width = 16
+    ws.column_dimensions["F"].width = 26
     ws.column_dimensions["G"].width = 12
     ws.freeze_panes = "A3"
-    return {"irpj": "$G$2"}
+    return {"irpj": "$G$2", "sales_tax": "$G$3"}
 
 
 def build_detalhado(
@@ -235,17 +131,17 @@ def build_detalhado(
     det_col = {name: get_column_letter(i) for i, name in enumerate(columns, start=1)}
 
     for col_idx, name in enumerate(columns, start=1):
-        _style_header_cell(ws.cell(row=1, column=col_idx, value=name))
+        style_header_cell(ws.cell(row=1, column=col_idx, value=name))
 
     irpj = f"Parametros!{global_rate_cells['irpj']}"
 
-    ordered = sorted(invoices, key=lambda inv: _num(inv.get("numero")))
+    ordered = sorted(invoices, key=lambda inv: num(inv.get("numero")))
     for offset, inv in enumerate(ordered):
         r = offset + 2
         chave = str(inv.get("chave_nfe", ""))
 
         for name in invoice_headers:
-            ws[f"{det_col[name]}{r}"] = _as_cell(inv.get(name, ""))
+            ws[f"{det_col[name]}{r}"] = as_cell(inv.get(name, ""))
 
         ws[f"{det_col['CFOP']}{r}"] = invoice_cfops.get(chave, "")
 
@@ -294,16 +190,15 @@ def build_resumo(
     pct_col = total_col + 1
 
     header_row = 3
-    _style_header_cell(ws.cell(row=header_row, column=label_col, value="Metrica"))
+    style_header_cell(ws.cell(row=header_row, column=label_col, value="Metrica"))
     for i, mp in enumerate(marketplaces):
-        _style_header_cell(ws.cell(row=header_row, column=first_mp_col + i, value=mp))
-    _style_header_cell(ws.cell(row=header_row, column=total_col, value="Total"))
-    _style_header_cell(ws.cell(row=header_row, column=pct_col, value="% s/ Faturado"))
+        style_header_cell(ws.cell(row=header_row, column=first_mp_col + i, value=mp))
+    style_header_cell(ws.cell(row=header_row, column=total_col, value="Total"))
+    style_header_cell(ws.cell(row=header_row, column=pct_col, value="% s/ Faturado"))
 
     det = "Detalhado"
     fcol = det_col[SRC_MARKETPLACE]
 
-    # (label, kind, detalhado column, number_format)
     metrics = [
         ("Notas Fiscais", "count", None, INT_FMT),
         ("Faturado", "sum", det_col[SRC_BASE_COMISSAO], MONEY_FMT),
@@ -318,7 +213,7 @@ def build_resumo(
     ]
 
     row = header_row + 1
-    faturado_row = row + 1  # Faturado is the 2nd metric
+    faturado_row = row + 1
 
     for label, kind, metric_col, fmt in metrics:
         label_cell = ws.cell(row=row, column=label_col, value=label)
@@ -370,7 +265,7 @@ def build_resumo(
             "ajuste as taxas na aba Parametros. Os demais valores vem direto das NF-e."
         ),
     )
-    ws.cell(row=note_row, column=label_col).font = Font(italic=True, color="808080")
+    ws.cell(row=note_row, column=label_col).font = NOTE_FONT
 
 
 def build_report(
@@ -381,7 +276,6 @@ def build_report(
     if not invoices:
         raise ValueError("No invoices found in the input workbook.")
 
-    # Keep the Invoices columns (names and order) for the Detalhado sheet.
     invoice_headers = [h for h in invoices[0].keys() if h]
     invoice_cfops = cfop_by_invoice(items)
 
@@ -403,14 +297,21 @@ def build_report(
     ws_resumo.title = "Resumo"
     ws_det = wb.create_sheet("Detalhado")
     ws_par = wb.create_sheet("Parametros")
+    ws_dre = wb.create_sheet("DRE")
 
     global_rate_cells = build_parametros(
         ws_par, marketplaces, ads_rates, afiliado_rates, candaru_rates
     )
-    det_col, _ = build_detalhado(
+    det_col, last_row = build_detalhado(
         ws_det, invoices, invoice_headers, invoice_cfops, global_rate_cells
     )
     build_resumo(ws_resumo, marketplaces, det_col)
+    build_dre(
+        ws_dre,
+        det_col,
+        last_row,
+        sales_tax_rate_cell=f"Parametros!{global_rate_cells['sales_tax']}",
+    )
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     wb.save(output_path)
