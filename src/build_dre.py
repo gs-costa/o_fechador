@@ -34,7 +34,6 @@ from report_common import (
     sum_columns,
     sum_items_column,
     sum_return_cfops,
-    sumifs_wildcard,
 )
 
 RowKind = Literal["section", "item", "subtotal", "total"]
@@ -85,7 +84,7 @@ def build_dre(
                 ("(-) CMV (Custo das Mercadorias Vendidas)", "item", "cmv", 1),
                 ("(-) Taxas de Marketplace", "item", "taxas_marketplace", 1),
                 ("(-) Taxas de Envio/Frete Pago", "item", "frete", 1),
-                ("(-) Custo com Expedição", "item", None, 1),
+                ("(-) Custo com Expedição", "item", "expedicao", 1),
                 ("(-) Embalagens", "item", None, 1),
                 ("= LUCRO BRUTO", "subtotal", "lucro_bruto", 0),
             ],
@@ -126,7 +125,6 @@ def build_dre(
     ]
 
     manual_keys = {
-        "(-) Custo com Expedição": "expedicao",
         "(-) Embalagens": "embalagens",
         "(-) Consultoria": "consultoria",
         "(-) Sistemas (Bling, ERP, Tiny, etc.)": "sistemas",
@@ -184,13 +182,10 @@ def build_dre(
         "cmv": cmv_formula,
         "taxas_marketplace": sum_column(det_col, "CANDARU", last_row),
         "frete": sum_column(det_col, SRC_FRETE, last_row),
-        "ads_ml": sumifs_wildcard(
-            det_col, "ADS", "market_place", "*Mercado Livre*", last_row
-        ),
-        "ads_shopee": sumifs_wildcard(
-            det_col, "ADS", "market_place", "*Shopee*", last_row
-        ),
-        "afiliados": sum_column(det_col, "Afiliado", last_row),
+        "ads_ml": '=SUMIF(Parametros!$A:$A,"*Mercado Livre*",Parametros!$B:$B)',
+        "ads_shopee": '=SUMIF(Parametros!$A:$A,"*Shopee*",Parametros!$B:$B)',
+        "afiliados": "=SUM(Parametros!$C:$C)",
+        "expedicao": "=SUM(Parametros!$E:$E)",
     }
 
     for row_num, label, kind, key, _indent in row_meta:
@@ -261,8 +256,10 @@ def build_dre(
         value=(
             "Preencha os custos unitários na aba Custos Produtos; o CMV é calculado "
             "automaticamente na aba Items (quantidade x custo). Demais linhas com valor 0 "
-            "podem ser preenchidas manualmente. Valores de receita e taxas vêm da aba "
-            f"Detalhado. Impostos sobre vendas usam a taxa em {sales_tax_rate_cell}."
+            "podem ser preenchidas manualmente. Valores de receita e CANDARU vêm da aba "
+            "Detalhado. ADS, Afiliado e Custos Expedição vêm da aba Parametros "
+            "(valores em R$). "
+            f"Impostos sobre vendas usam a taxa em {sales_tax_rate_cell}."
         ),
     )
     ws.cell(row=note_row, column=1).font = NOTE_FONT

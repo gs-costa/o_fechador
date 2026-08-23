@@ -3,25 +3,28 @@
 Reads the workbook produced by ``convert_nfe_xml_to_xlsx.py`` (sheets ``Invoices``
 and ``Items``) and writes a new workbook with:
 
-  - Resumo:     one clean grid, metrics as rows, marketplaces as columns + Total.
+  - Resumo:     one clean grid, metrics as rows (incl. taxas, impostos, custos,
+                lucro), marketplaces as columns + Total.
   - Detalhado:  every column from the Invoices sheet (kept verbatim) followed by the
                 appended calculated columns (live Excel formulas).
-  - Parametros: editable rates per marketplace (ADS / Afiliado / CANDARU) and global
-                rates (IRPJ/CSLL, impostos sobre vendas). Change a rate and the
-                whole report recalculates.
+  - Parametros: ADS, Afiliado and Custos Expedição as period amounts (R$) entered
+                manually per marketplace; CANDARU and global rates (IRPJ/CSLL,
+                impostos sobre vendas) remain percentages. Resumo reads these
+                amounts from here.
   - Items:      line items from the NF-e workbook, with custo_unitario / custo_total.
   - Custos Produtos: deduplicated product list (codigo + ean) for manual cost entry.
   - DRE:        Demonstração do Resultado do Exercício (see ``build_dre.py``).
 
 Only values that can be derived from the NF-e are included. KPIs that depend on
 external data (Depositado, Custo Produto, Liquido, Margem, Frete Primario) are not
-produced. The appended columns are estimates computed from NF-e values:
+produced. The appended Detalhado columns are estimates computed from NF-e values:
 
-  ADS       = taxa_ads(marketplace)      * Faturado (valor_produtos)
-  Afiliado  = taxa_afiliado(marketplace) * Faturado (valor_produtos)
   IRPJ/CSLL = taxa_irpj                   * Base ICMS (valor_icms_bc)
   CANDARU   = taxa_candaru(marketplace) * valor_base_comissao
               (3% when market_place contains AMAZON B2B or TIKTOK SHOP; 7% otherwise)
+
+ADS, Afiliado and Custos Expedição are marketplace totals entered on Parametros
+(not allocated per NF-e).
 """
 
 from __future__ import annotations
@@ -33,7 +36,6 @@ from pathlib import Path
 from typing import BinaryIO
 
 from openpyxl import Workbook
-from openpyxl.styles import Font
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.worksheet import Worksheet
 
@@ -44,8 +46,6 @@ from report_common import (
     BORDER,
     CANDARU_RATE_DEFAULT,
     CUSTOS_SHEET,
-    DEFAULT_ADS_RATES,
-    DEFAULT_AFILIADO_RATES,
     DEFAULT_IRPJ_RATE,
     DEFAULT_SALES_TAX_RATE,
     DET_WIDTHS,
@@ -61,7 +61,6 @@ from report_common import (
     SRC_BASE_ICMS,
     SRC_COFINS,
     SRC_DIFAL,
-    SRC_FATURADO,
     SRC_ICMS,
     SRC_MARKETPLACE,
     SRC_PIS,
@@ -84,14 +83,13 @@ from report_common import (
 def build_parametros(
     ws: Worksheet,
     marketplaces: list[str],
-    ads_rates: dict[str, float],
-    afiliado_rates: dict[str, float],
     candaru_rates: dict[str, float],
 ) -> dict[str, str]:
-    ws["A1"] = "Taxas por Marketplace"
+    ws["A1"] = "Parâmetros por Marketplace"
     ws["A1"].font = TITLE_FONT
     for col, name in zip(
-        "ABCD", ("Marketplace", "Taxa ADS", "Taxa Afiliado", "Taxa CANDARU")
+        "ABCDE",
+        ("Marketplace", "ADS", "Afiliado", "Taxa CANDARU", "Custos Expedição"),
     ):
         cell = ws[f"{col}2"]
         cell.value = name
@@ -99,12 +97,14 @@ def build_parametros(
 
     for idx, mp in enumerate(marketplaces, start=3):
         ws[f"A{idx}"] = mp
-        ws[f"B{idx}"] = ads_rates.get(mp, 0.0)
-        ws[f"C{idx}"] = afiliado_rates.get(mp, 0.0)
+        ws[f"B{idx}"] = 0
+        ws[f"C{idx}"] = 0
         ws[f"D{idx}"] = candaru_rates.get(mp, CANDARU_RATE_DEFAULT)
-        ws[f"B{idx}"].number_format = PCT_FMT
-        ws[f"C{idx}"].number_format = PCT_FMT
+        ws[f"E{idx}"] = 0
+        ws[f"B{idx}"].number_format = MONEY_FMT
+        ws[f"C{idx}"].number_format = MONEY_FMT
         ws[f"D{idx}"].number_format = PCT_FMT
+        ws[f"E{idx}"].number_format = MONEY_FMT
 
     ws["F2"] = "Taxa IRPJ/CSLL"
     ws["F2"].font = LABEL_FONT
@@ -117,12 +117,24 @@ def build_parametros(
     ws["G3"].number_format = PCT_FMT
 
     ws.column_dimensions["A"].width = 22
-    ws.column_dimensions["B"].width = 14
-    ws.column_dimensions["C"].width = 14
+    ws.column_dimensions["B"].width = 16
+    ws.column_dimensions["C"].width = 16
     ws.column_dimensions["D"].width = 14
+    ws.column_dimensions["E"].width = 18
     ws.column_dimensions["F"].width = 26
     ws.column_dimensions["G"].width = 12
     ws.freeze_panes = "A3"
+    note_row = 4 + len(marketplaces)
+    ws.cell(
+        row=note_row,
+        column=1,
+        value=(
+            "Preencha ADS, Afiliado e Custos Expedição em R$ (valor do período). "
+            "A aba Resumo busca esses valores automaticamente. "
+            "Taxa CANDARU permanece em percentual."
+        ),
+    )
+    ws.cell(row=note_row, column=1).font = NOTE_FONT
     return {"irpj": "$G$2", "sales_tax": "$G$3"}
 
 
@@ -155,14 +167,9 @@ def build_detalhado(
 
         ws[f"{det_col['CFOP']}{r}"] = invoice_cfops.get(chave, "")
 
-        fat = f"{det_col[SRC_FATURADO]}{r}"
         base_comissao = f"{det_col[SRC_BASE_COMISSAO]}{r}"
         base = f"{det_col[SRC_BASE_ICMS]}{r}"
         mp = f"{det_col[SRC_MARKETPLACE]}{r}"
-        ws[f"{det_col['ADS']}{r}"] = f"=VLOOKUP({mp},Parametros!$A:$C,2,FALSE)*{fat}"
-        ws[f"{det_col['Afiliado']}{r}"] = (
-            f"=VLOOKUP({mp},Parametros!$A:$C,3,FALSE)*{fat}"
-        )
         ws[f"{det_col['IRPJ/CSLL']}{r}"] = f"={irpj}*{base}"
         ws[f"{det_col['CANDARU']}{r}"] = (
             f"=VLOOKUP({mp},Parametros!$A:$D,4,FALSE)*{base_comissao}"
@@ -188,6 +195,9 @@ def build_resumo(
     ws: Worksheet,
     marketplaces: list[str],
     det_col: dict[str, str],
+    *,
+    items_col: dict[str, str] | None = None,
+    sales_tax_rate_cell: str = "Parametros!$G$3",
 ) -> None:
     ws["A1"] = "Fechamento - Resumo por Marketplace"
     ws["A1"].font = TITLE_FONT
@@ -208,71 +218,128 @@ def build_resumo(
 
     det = "Detalhado"
     fcol = det_col[SRC_MARKETPLACE]
+    items_mp = items_col["market_place"] if items_col else None
+    items_custo = items_col["custo_total"] if items_col else None
 
-    metrics = [
+    metrics: list[tuple[str, str, str | None, str]] = [
         ("Notas Fiscais", "count", None, INT_FMT),
         ("Faturado", "sum", det_col[SRC_BASE_COMISSAO], MONEY_FMT),
+        ("Taxas Marketplace", "manual", None, MONEY_FMT),
         ("ICMS", "sum", det_col[SRC_ICMS], MONEY_FMT),
         ("DIFAL", "sum", det_col[SRC_DIFAL], MONEY_FMT),
         ("PIS", "sum", det_col[SRC_PIS], MONEY_FMT),
         ("COFINS", "sum", det_col[SRC_COFINS], MONEY_FMT),
         ("IRPJ/CSLL", "sum", det_col["IRPJ/CSLL"], MONEY_FMT),
-        ("ADS", "sum", det_col["ADS"], MONEY_FMT),
-        ("Afiliado", "sum", det_col["Afiliado"], MONEY_FMT),
+        ("ADS", "param", "2", MONEY_FMT),
+        ("Afiliado", "param", "3", MONEY_FMT),
         ("CANDARU", "sum", det_col["CANDARU"], MONEY_FMT),
+        (
+            "Imposto sobre vendas (SIMPLES NACIONAL)",
+            "sales_tax",
+            None,
+            MONEY_FMT,
+        ),
+        ("Custos Produtos", "items_sum", None, MONEY_FMT),
+        ("Custos Expedição", "param", "5", MONEY_FMT),
+        ("Lucro", "lucro", None, MONEY_FMT),
     ]
 
     row = header_row + 1
-    faturado_row = row + 1
+    row_of: dict[str, int] = {}
+    for label, _kind, _metric_col, _fmt in metrics:
+        row_of[label] = row
+        row += 1
+
+    faturado_row = row_of["Faturado"]
+    last_data_row = row_of["Lucro"]
+
+    def col_letter(col_idx: int) -> str:
+        return get_column_letter(col_idx)
 
     for label, kind, metric_col, fmt in metrics:
-        label_cell = ws.cell(row=row, column=label_col, value=label)
+        data_row = row_of[label]
+        label_cell = ws.cell(row=data_row, column=label_col, value=label)
         label_cell.font = LABEL_FONT
         label_cell.border = BORDER
+        if kind == "lucro":
+            label_cell.fill = TOTAL_FILL
 
         for i, _mp in enumerate(marketplaces):
             c = first_mp_col + i
-            mp_ref = f"{get_column_letter(c)}${header_row}"
+            mp_ref = f"{col_letter(c)}${header_row}"
             crit = f"{det}!${fcol}:${fcol}"
             if kind == "count":
-                formula = f"=COUNTIF({crit},{mp_ref})"
-            else:
+                formula: str | int = f"=COUNTIF({crit},{mp_ref})"
+            elif kind == "sum":
                 rng = f"{det}!${metric_col}:${metric_col}"
                 formula = f"=SUMIF({crit},{mp_ref},{rng})"
-            cell = ws.cell(row=row, column=c, value=formula)
+            elif kind == "items_sum":
+                if items_mp and items_custo:
+                    formula = (
+                        f"=SUMIF({ITEMS_SHEET}!${items_mp}:${items_mp},"
+                        f"Resumo!{mp_ref},{ITEMS_SHEET}!${items_custo}:${items_custo})"
+                    )
+                else:
+                    formula = 0
+            elif kind == "sales_tax":
+                formula = f"={col_letter(c)}{faturado_row}*{sales_tax_rate_cell}"
+            elif kind == "param":
+                formula = (
+                    f"=IFERROR(VLOOKUP({mp_ref},Parametros!$A:$E,{metric_col},FALSE),0)"
+                )
+            elif kind == "manual":
+                formula = 0
+            else:
+                first_cost = f"{col_letter(c)}{row_of['Taxas Marketplace']}"
+                last_cost = f"{col_letter(c)}{row_of['Custos Expedição']}"
+                formula = f"={col_letter(c)}{faturado_row}-SUM({first_cost}:{last_cost})"
+
+            cell = ws.cell(row=data_row, column=c, value=formula)
             cell.number_format = fmt
             cell.border = BORDER
+            if kind == "lucro":
+                cell.fill = TOTAL_FILL
+                cell.font = LABEL_FONT
 
-        first = f"{get_column_letter(first_mp_col)}{row}"
-        last = f"{get_column_letter(last_mp_col)}{row}"
-        total_cell = ws.cell(row=row, column=total_col, value=f"=SUM({first}:{last})")
+        first = f"{col_letter(first_mp_col)}{data_row}"
+        last = f"{col_letter(last_mp_col)}{data_row}"
+        total_cell = ws.cell(
+            row=data_row, column=total_col, value=f"=SUM({first}:{last})"
+        )
         total_cell.number_format = fmt
         total_cell.font = LABEL_FONT
         total_cell.fill = TOTAL_FILL
         total_cell.border = BORDER
 
         pct_formula = None
-        if kind == "sum":
-            fat_total = f"{get_column_letter(total_col)}{faturado_row}"
-            pct_formula = f"=IFERROR({get_column_letter(total_col)}{row}/{fat_total},0)"
-        pct_cell = ws.cell(row=row, column=pct_col, value=pct_formula)
+        if kind != "count":
+            fat_total = f"{col_letter(total_col)}{faturado_row}"
+            pct_formula = (
+                f"=IFERROR({col_letter(total_col)}{data_row}/{fat_total},0)"
+            )
+        pct_cell = ws.cell(row=data_row, column=pct_col, value=pct_formula)
         if pct_formula is not None:
             pct_cell.number_format = PCT_FMT
         pct_cell.border = BORDER
-        row += 1
+        if kind == "lucro":
+            pct_cell.fill = TOTAL_FILL
 
     for i in range(n_mp + 3):
-        col = get_column_letter(label_col + i)
-        ws.column_dimensions[col].width = 20 if i == 0 else 15
+        col = col_letter(label_col + i)
+        ws.column_dimensions[col].width = 42 if i == 0 else 15
     ws.freeze_panes = ws.cell(row=header_row + 1, column=first_mp_col).coordinate
 
-    note_row = row + 2
+    note_row = last_data_row + 2
     ws.cell(
         row=note_row,
         column=label_col,
         value=(
-            "ADS, Afiliado, IRPJ/CSLL e CANDARU sao estimativas (taxa x valor da NF-e); "
-            "ajuste as taxas na aba Parametros. Os demais valores vem direto das NF-e."
+            "Taxas Marketplace está em 0 por enquanto. "
+            f"Imposto sobre vendas = Faturado × {sales_tax_rate_cell}. "
+            "Custos Produtos = SOMASE de Items!custo_total pelo marketplace do "
+            "cabeçalho. Lucro = Faturado − soma das demais linhas de valor. "
+            "ADS, Afiliado e Custos Expedição vêm da aba Parametros (valores em R$, "
+            "preenchimento manual). IRPJ/CSLL e CANDARU são estimativas por taxa."
         ),
     )
     ws.cell(row=note_row, column=label_col).font = NOTE_FONT
@@ -298,8 +365,6 @@ def build_report_from_data(
         }
     )
 
-    ads_rates = dict(DEFAULT_ADS_RATES)
-    afiliado_rates = dict(DEFAULT_AFILIADO_RATES)
     candaru_rates = {mp: candaru_rate_for(mp) for mp in marketplaces}
 
     wb = Workbook()
@@ -312,15 +377,19 @@ def build_report_from_data(
     ws_par = wb.create_sheet("Parametros")
     ws_dre = wb.create_sheet("DRE")
 
-    global_rate_cells = build_parametros(
-        ws_par, marketplaces, ads_rates, afiliado_rates, candaru_rates
-    )
+    global_rate_cells = build_parametros(ws_par, marketplaces, candaru_rates)
     det_col, last_row = build_detalhado(
         ws_det, invoices, invoice_headers, invoice_cfops, global_rate_cells
     )
     custos_col, _ = build_custos_produtos(ws_custos, items)
     items_col, items_last_row = build_items(ws_items, items, item_headers, custos_col)
-    build_resumo(ws_resumo, marketplaces, det_col)
+    build_resumo(
+        ws_resumo,
+        marketplaces,
+        det_col,
+        items_col=items_col,
+        sales_tax_rate_cell=f"Parametros!{global_rate_cells['sales_tax']}",
+    )
     build_dre(
         ws_dre,
         det_col,

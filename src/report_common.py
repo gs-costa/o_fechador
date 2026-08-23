@@ -9,20 +9,6 @@ from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.worksheet.worksheet import Worksheet
 
 # Default assumption rates (editable in the Parametros sheet).
-DEFAULT_ADS_RATES: dict[str, float] = {
-    "Mercado Livre": 0.0597444848231328,
-    "Mercado Livre Full": 0.0597444848231328,
-    "Shopee": 0.0816910844699686,
-    "Shopee Full": 0.0816910844699686,
-    "TikTok": 0.0808623294375085,
-}
-DEFAULT_AFILIADO_RATES: dict[str, float] = {
-    "Mercado Livre": 0.0102977242994446,
-    "Mercado Livre Full": 0.0102977242994446,
-    "Shopee": 0.031148329972608,
-    "Shopee Full": 0.031148329972608,
-    "TikTok": 0.0924554265462002,
-}
 DEFAULT_IRPJ_RATE = 0.0308
 DEFAULT_SALES_TAX_RATE = 0.04
 CANDARU_RATE_LOW = 0.03
@@ -45,8 +31,6 @@ BORDER = Border(left=THIN, right=THIN, top=THIN, bottom=THIN)
 
 ADDED_COLUMNS = [
     "CFOP",
-    "ADS",
-    "Afiliado",
     "IRPJ/CSLL",
     "CANDARU",
 ]
@@ -75,8 +59,6 @@ MONEY_COLUMNS = {
     "valor_icms_bc",
     "valor_pis",
     "valor_cofins",
-    "ADS",
-    "Afiliado",
     "IRPJ/CSLL",
     "CANDARU",
 }
