@@ -89,6 +89,7 @@ def _export_report_bytes(
     *,
     bling_path: Path | None,
     marketplace_paths: dict[str, Path],
+    regime_especial: bool,
 ) -> bytes:
     buffer = io.BytesIO()
     build_report_from_data(
@@ -97,6 +98,7 @@ def _export_report_bytes(
         buffer,
         bling_path=bling_path,
         marketplace_paths=marketplace_paths,
+        regime_especial=regime_especial,
     )
     buffer.seek(0)
     return buffer.getvalue()
@@ -250,11 +252,31 @@ def _render_marketplace_sources(
     return bling_path, marketplace_paths
 
 
+def _render_fiscal_options() -> bool:
+    with st.expander("Opções fiscais", expanded=True):
+        regime_especial = st.toggle(
+            "Regime Especial",
+            value=False,
+            help=(
+                "Quando ativo, vendas destinadas para fora de MG usam 1,3% da base "
+                "de ICMS (vBC) no lugar do ICMS destacado na NF-e."
+            ),
+        )
+        if regime_especial:
+            st.success(
+                "Regime Especial ATIVO — fora de MG: ICMS = 1,3% × base de ICMS."
+            )
+        else:
+            st.info("Regime Especial INATIVO — será usado o ICMS destacado na NF-e.")
+    return regime_especial
+
+
 def _render_export(
     result: ConversionResult,
     *,
     bling_path: Path | None,
     marketplace_paths: dict[str, Path],
+    regime_especial: bool,
 ) -> None:
     st.subheader("Exportar")
     st.caption("Baixe os arquivos somente quando estiver satisfeito com a pré-visualização.")
@@ -284,6 +306,7 @@ def _render_export(
                 result,
                 bling_path=bling_path,
                 marketplace_paths=marketplace_paths,
+                regime_especial=regime_especial,
             )
         except (FileNotFoundError, ValueError) as exc:
             st.error(str(exc))
@@ -325,12 +348,15 @@ def main() -> None:
     st.divider()
     bling_path, marketplace_paths = _render_marketplace_sources(result)
     st.divider()
+    regime_especial = _render_fiscal_options()
+    st.divider()
     _render_preview(result)
     st.divider()
     _render_export(
         result,
         bling_path=bling_path,
         marketplace_paths=marketplace_paths,
+        regime_especial=regime_especial,
     )
 
 

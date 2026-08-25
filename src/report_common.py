@@ -11,6 +11,7 @@ from openpyxl.worksheet.worksheet import Worksheet
 # Default assumption rates (editable in the Parametros sheet).
 DEFAULT_IRPJ_RATE = 0.0308
 DEFAULT_SALES_TAX_RATE = 0.04
+DEFAULT_SPECIAL_ICMS_RATE = 0.013
 CANDARU_RATE_LOW = 0.03
 CANDARU_RATE_DEFAULT = 0.07
 CANDARU_LOW_MARKETPLACE_SUBSTRINGS = ("amazon b2b", "tiktok shop")
@@ -31,6 +32,7 @@ BORDER = Border(left=THIN, right=THIN, top=THIN, bottom=THIN)
 
 ADDED_COLUMNS = [
     "CFOP",
+    "ICMS Considerado",
     "IRPJ/CSLL",
     "CANDARU",
 ]
@@ -39,6 +41,7 @@ SRC_MARKETPLACE = "market_place"
 SRC_FATURADO = "valor_produtos"
 SRC_BASE_COMISSAO = "valor_base_comissao"
 SRC_BASE_ICMS = "valor_icms_bc"
+SRC_DEST_UF = "destinatario_uf"
 SRC_DESCONTO = "valor_desconto"
 SRC_FRETE = "valor_frete"
 SRC_ICMS = "valor_icms"
@@ -60,6 +63,7 @@ MONEY_COLUMNS = {
     "valor_pis",
     "valor_cofins",
     "taxa_marketplace",
+    "ICMS Considerado",
     "IRPJ/CSLL",
     "CANDARU",
 }
@@ -74,6 +78,7 @@ DET_WIDTHS = {
     "natureza_operacao": 20,
     "destinatario_doc": 16,
     "destinatario_uf": 8,
+    "ICMS Considerado": 18,
     "status": 22,
     "arquivo": 30,
 }

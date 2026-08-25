@@ -54,6 +54,7 @@ from report_common import (
     CUSTOS_SHEET,
     DEFAULT_IRPJ_RATE,
     DEFAULT_SALES_TAX_RATE,
+    DEFAULT_SPECIAL_ICMS_RATE,
     DET_WIDTHS,
     INT_FMT,
     ITEM_HEADERS,
@@ -66,6 +67,7 @@ from report_common import (
     SRC_BASE_COMISSAO,
     SRC_BASE_ICMS,
     SRC_COFINS,
+    SRC_DEST_UF,
     SRC_DIFAL,
     SRC_ICMS,
     SRC_MARKETPLACE,
@@ -90,6 +92,8 @@ def build_parametros(
     ws: Worksheet,
     marketplaces: list[str],
     candaru_rates: dict[str, float],
+    *,
+    regime_especial: bool = False,
 ) -> dict[str, str]:
     ws["A1"] = "Parâmetros por Marketplace"
     ws["A1"].font = TITLE_FONT
@@ -122,6 +126,18 @@ def build_parametros(
     ws["G3"] = DEFAULT_SALES_TAX_RATE
     ws["G3"].number_format = PCT_FMT
 
+    ws["F4"] = "Regime Especial"
+    ws["F4"].font = LABEL_FONT
+    ws["G4"] = "ATIVO" if regime_especial else "INATIVO"
+    ws["G4"].font = LABEL_FONT
+    if regime_especial:
+        ws["G4"].fill = TOTAL_FILL
+
+    ws["F5"] = "Taxa ICMS Regime Especial"
+    ws["F5"].font = LABEL_FONT
+    ws["G5"] = DEFAULT_SPECIAL_ICMS_RATE
+    ws["G5"].number_format = PCT_FMT
+
     ws.column_dimensions["A"].width = 22
     ws.column_dimensions["B"].width = 16
     ws.column_dimensions["C"].width = 16
@@ -137,11 +153,17 @@ def build_parametros(
         value=(
             "Preencha ADS, Afiliado e Custos Expedição em R$ (valor do período). "
             "A aba Resumo busca esses valores automaticamente. "
-            "Taxa CANDARU permanece em percentual."
+            "Taxa CANDARU permanece em percentual. Quando o Regime Especial está "
+            "ATIVO, vendas para fora de MG usam 1,3% da base de ICMS."
         ),
     )
     ws.cell(row=note_row, column=1).font = NOTE_FONT
-    return {"irpj": "$G$2", "sales_tax": "$G$3"}
+    return {
+        "irpj": "$G$2",
+        "sales_tax": "$G$3",
+        "special_tax_status": "$G$4",
+        "special_icms_rate": "$G$5",
+    }
 
 
 def build_detalhado(
@@ -162,6 +184,8 @@ def build_detalhado(
         style_header_cell(ws.cell(row=1, column=col_idx, value=name))
 
     irpj = f"Parametros!{global_rate_cells['irpj']}"
+    regime_status = f"Parametros!{global_rate_cells['special_tax_status']}"
+    special_icms_rate = f"Parametros!{global_rate_cells['special_icms_rate']}"
 
     ordered = sorted(invoices, key=lambda inv: num(inv.get("numero")))
     for offset, inv in enumerate(ordered):
@@ -175,7 +199,14 @@ def build_detalhado(
 
         base_comissao = f"{det_col[SRC_BASE_COMISSAO]}{r}"
         base = f"{det_col[SRC_BASE_ICMS]}{r}"
+        original_icms = f"{det_col[SRC_ICMS]}{r}"
+        destination_uf = f"{det_col[SRC_DEST_UF]}{r}"
         mp = f"{det_col[SRC_MARKETPLACE]}{r}"
+        icms_outside_mg = f"{base}*{special_icms_rate}"
+        icms_by_uf = f'IF(UPPER(TRIM({destination_uf}))<>"MG",{icms_outside_mg},{original_icms})'
+        ws[f"{det_col['ICMS Considerado']}{r}"] = (
+            f'=IF({regime_status}="ATIVO",{icms_by_uf},{original_icms})'
+        )
         ws[f"{det_col['IRPJ/CSLL']}{r}"] = f"={irpj}*{base}"
         ws[f"{det_col['CANDARU']}{r}"] = (
             f"=VLOOKUP({mp},Parametros!$A:$D,4,FALSE)*{base_comissao}"
@@ -204,9 +235,14 @@ def build_resumo(
     *,
     items_col: dict[str, str] | None = None,
     sales_tax_rate_cell: str = "Parametros!$G$3",
+    regime_especial: bool = False,
 ) -> None:
     ws["A1"] = "Fechamento - Resumo por Marketplace"
     ws["A1"].font = TITLE_FONT
+    ws["A2"] = f"Regime Especial: {'ATIVO' if regime_especial else 'INATIVO'}"
+    ws["A2"].font = LABEL_FONT
+    if regime_especial:
+        ws["A2"].fill = TOTAL_FILL
 
     n_mp = len(marketplaces)
     label_col = 1
@@ -236,7 +272,7 @@ def build_resumo(
             det_col[MARKETPLACE_FEE_COLUMN],
             MONEY_FMT,
         ),
-        ("ICMS", "sum", det_col[SRC_ICMS], MONEY_FMT),
+        ("ICMS", "sum", det_col["ICMS Considerado"], MONEY_FMT),
         ("DIFAL", "sum", det_col[SRC_DIFAL], MONEY_FMT),
         ("PIS", "sum", det_col[SRC_PIS], MONEY_FMT),
         ("COFINS", "sum", det_col[SRC_COFINS], MONEY_FMT),
@@ -344,6 +380,8 @@ def build_resumo(
         column=label_col,
         value=(
             "Taxas Marketplace é calculada por pedido a partir das planilhas externas. "
+            f"Regime Especial está {'ATIVO' if regime_especial else 'INATIVO'}; "
+            "quando ativo, o ICMS para fora de MG é 1,3% da base de ICMS. "
             f"Imposto sobre vendas = Faturado × {sales_tax_rate_cell}. "
             "Custos Produtos = SOMASE de Items!custo_total pelo marketplace do "
             "cabeçalho. Lucro = Faturado − soma das demais linhas de valor. "
@@ -409,6 +447,7 @@ def build_report_from_data(
     *,
     bling_path: Path | None = None,
     marketplace_paths: dict[str, Path] | None = None,
+    regime_especial: bool = False,
 ) -> dict[str, object]:
     if not invoices:
         raise ValueError("No invoices found in the input data.")
@@ -443,7 +482,12 @@ def build_report_from_data(
     ws_dre = wb.create_sheet("DRE")
     ws_conc = wb.create_sheet("Conciliacao")
 
-    global_rate_cells = build_parametros(ws_par, marketplaces, candaru_rates)
+    global_rate_cells = build_parametros(
+        ws_par,
+        marketplaces,
+        candaru_rates,
+        regime_especial=regime_especial,
+    )
     det_col, last_row = build_detalhado(
         ws_det, invoices, invoice_headers, invoice_cfops, global_rate_cells
     )
@@ -455,6 +499,7 @@ def build_report_from_data(
         det_col,
         items_col=items_col,
         sales_tax_rate_cell=f"Parametros!{global_rate_cells['sales_tax']}",
+        regime_especial=regime_especial,
     )
     build_dre(
         ws_dre,
@@ -477,6 +522,7 @@ def build_report_from_data(
         "marketplaces": marketplaces,
         "fee_orders_found": fee_stats.orders_found,
         "fee_matches": fee_stats.fees_found,
+        "regime_especial": regime_especial,
     }
 
 
@@ -486,6 +532,7 @@ def build_report(
     *,
     bling_path: Path | None = None,
     marketplace_paths: dict[str, Path] | None = None,
+    regime_especial: bool = False,
 ) -> dict[str, object]:
     invoices, items = load_result(input_path)
     return build_report_from_data(
@@ -494,6 +541,7 @@ def build_report(
         output_path,
         bling_path=bling_path,
         marketplace_paths=marketplace_paths,
+        regime_especial=regime_especial,
     )
 
 
@@ -511,6 +559,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Output report path (default: exports/relatorio_fechamento_<timestamp>.xlsx)",
     )
+    parser.add_argument(
+        "--regime-especial",
+        action="store_true",
+        help="Use 1.3% of the ICMS base for sales outside MG.",
+    )
     return parser
 
 
@@ -525,7 +578,11 @@ def main() -> None:
         args.output or Path("exports") / f"relatorio_fechamento_{timestamp}.xlsx"
     )
 
-    info = build_report(args.input, output_path)
+    info = build_report(
+        args.input,
+        output_path,
+        regime_especial=args.regime_especial,
+    )
 
     marketplaces = info["marketplaces"]
     marketplaces_text = (
