@@ -8,4 +8,5 @@ dependencies = [
     "openpyxl>=3.1.5",
     "ruff>=0.16.1",
     "streamlit>=1.42.0",
+    "xlrd>=2.0.2",
 ]

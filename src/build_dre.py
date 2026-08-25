@@ -180,7 +180,7 @@ def build_dre(
         "descontos": sum_column(det_col, SRC_DESCONTO, last_row),
         "impostos_vendas": f"={ref('receita_bruta_ajustada')}*{sales_tax_rate_cell}",
         "cmv": cmv_formula,
-        "taxas_marketplace": sum_column(det_col, "CANDARU", last_row),
+        "taxas_marketplace": sum_column(det_col, "taxa_marketplace", last_row),
         "frete": sum_column(det_col, SRC_FRETE, last_row),
         "ads_ml": '=SUMIF(Parametros!$A:$A,"*Mercado Livre*",Parametros!$B:$B)',
         "ads_shopee": '=SUMIF(Parametros!$A:$A,"*Shopee*",Parametros!$B:$B)',

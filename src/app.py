@@ -84,9 +84,20 @@ def _export_nfe_bytes(result: ConversionResult) -> bytes:
     return buffer.getvalue()
 
 
-def _export_report_bytes(result: ConversionResult) -> bytes:
+def _export_report_bytes(
+    result: ConversionResult,
+    *,
+    bling_path: Path | None,
+    marketplace_paths: dict[str, Path],
+) -> bytes:
     buffer = io.BytesIO()
-    build_report_from_data(result.invoices, result.items, buffer)
+    build_report_from_data(
+        result.invoices,
+        result.items,
+        buffer,
+        bling_path=bling_path,
+        marketplace_paths=marketplace_paths,
+    )
     buffer.seek(0)
     return buffer.getvalue()
 
@@ -186,7 +197,65 @@ def _render_preview(result: ConversionResult) -> None:
             st.success("Nenhum arquivo com erro.")
 
 
-def _render_export(result: ConversionResult) -> None:
+def _render_marketplace_sources(
+    result: ConversionResult,
+) -> tuple[Path | None, dict[str, Path]]:
+    marketplaces = sorted(
+        {
+            str(invoice.get("market_place", ""))
+            for invoice in result.invoices
+            if invoice.get("market_place")
+        }
+    )
+
+    with st.expander("Planilhas para taxas de marketplace", expanded=True):
+        st.caption(
+            "Informe o relatório do Bling e uma planilha para cada marketplace. "
+            "Cada pedido é procurado em todas as planilhas informadas, mesmo que a "
+            "pasta da NF-e misture marketplaces. Campos vazios geram taxa de "
+            "marketplace igual a R$ 0."
+        )
+        bling_value = st.text_input(
+            "Caminho do relatório do Bling",
+            key="bling_report_path",
+            placeholder=r"C:\caminho\relatorio_bling.xls",
+            help=(
+                "A planilha deve conter Número e Número do pedido multiloja para "
+                "relacionar cada NF-e ao pedido."
+            ),
+        ).strip()
+
+        marketplace_paths: dict[str, Path] = {}
+        for marketplace in marketplaces:
+            value = st.text_input(
+                f"Planilha de taxas — {marketplace}",
+                key=f"marketplace_report_path::{marketplace}",
+                placeholder=r"C:\caminho\planilha_marketplace.xlsx",
+                help=(
+                    "O formato é detectado pelas colunas. Shopee (aba Renda): Ver, "
+                    "Preço do produto e Quantia total lançada (R$). Mercado Livre: "
+                    "Receita por produtos e Total (BRL)."
+                ),
+            ).strip()
+            if value:
+                marketplace_paths[marketplace] = Path(value).expanduser()
+
+        if marketplace_paths and not bling_value:
+            st.warning(
+                "Sem o relatório do Bling não é possível relacionar as NF-e aos "
+                "pedidos; as taxas permanecerão em R$ 0."
+            )
+
+    bling_path = Path(bling_value).expanduser() if bling_value else None
+    return bling_path, marketplace_paths
+
+
+def _render_export(
+    result: ConversionResult,
+    *,
+    bling_path: Path | None,
+    marketplace_paths: dict[str, Path],
+) -> None:
     st.subheader("Exportar")
     st.caption("Baixe os arquivos somente quando estiver satisfeito com a pré-visualização.")
 
@@ -206,14 +275,26 @@ def _render_export(result: ConversionResult) -> None:
 
     with col_report:
         st.markdown("**Relatório de fechamento**")
-        st.write("Abas: Resumo, Detalhado, Custos Produtos, Items, Parâmetros, DRE")
-        st.download_button(
-            label="Baixar relatorio_fechamento.xlsx",
-            data=_export_report_bytes(result),
-            file_name=f"relatorio_fechamento_{timestamp}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            use_container_width=True,
+        st.write(
+            "Abas: Resumo, Detalhado, Custos Produtos, Items, Parâmetros, DRE, "
+            "Conciliação"
         )
+        try:
+            report_data = _export_report_bytes(
+                result,
+                bling_path=bling_path,
+                marketplace_paths=marketplace_paths,
+            )
+        except (FileNotFoundError, ValueError) as exc:
+            st.error(str(exc))
+        else:
+            st.download_button(
+                label="Baixar relatorio_fechamento.xlsx",
+                data=report_data,
+                file_name=f"relatorio_fechamento_{timestamp}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+            )
 
 
 def main() -> None:
@@ -242,9 +323,15 @@ def main() -> None:
 
     _render_metrics(result)
     st.divider()
+    bling_path, marketplace_paths = _render_marketplace_sources(result)
+    st.divider()
     _render_preview(result)
     st.divider()
-    _render_export(result)
+    _render_export(
+        result,
+        bling_path=bling_path,
+        marketplace_paths=marketplace_paths,
+    )
 
 
 if __name__ == "__main__":

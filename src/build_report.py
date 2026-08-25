@@ -14,6 +14,7 @@ and ``Items``) and writes a new workbook with:
   - Items:      line items from the NF-e workbook, with custo_unitario / custo_total.
   - Custos Produtos: deduplicated product list (codigo + ean) for manual cost entry.
   - DRE:        Demonstração do Resultado do Exercício (see ``build_dre.py``).
+  - Conciliacao: how many invoices got an order number and a marketplace fee.
 
 Only values that can be derived from the NF-e are included. KPIs that depend on
 external data (Depositado, Custo Produto, Liquido, Margem, Frete Primario) are not
@@ -41,6 +42,11 @@ from openpyxl.worksheet.worksheet import Worksheet
 
 from build_dre import build_dre
 from build_items import build_custos_produtos, build_items
+from marketplace_fees import (
+    MARKETPLACE_FEE_COLUMN,
+    FeeJoinStats,
+    enrich_invoices_with_marketplace_fees,
+)
 from report_common import (
     ADDED_COLUMNS,
     BORDER,
@@ -224,7 +230,12 @@ def build_resumo(
     metrics: list[tuple[str, str, str | None, str]] = [
         ("Notas Fiscais", "count", None, INT_FMT),
         ("Faturado", "sum", det_col[SRC_BASE_COMISSAO], MONEY_FMT),
-        ("Taxas Marketplace", "manual", None, MONEY_FMT),
+        (
+            "Taxas Marketplace",
+            "sum",
+            det_col[MARKETPLACE_FEE_COLUMN],
+            MONEY_FMT,
+        ),
         ("ICMS", "sum", det_col[SRC_ICMS], MONEY_FMT),
         ("DIFAL", "sum", det_col[SRC_DIFAL], MONEY_FMT),
         ("PIS", "sum", det_col[SRC_PIS], MONEY_FMT),
@@ -287,8 +298,6 @@ def build_resumo(
                 formula = (
                     f"=IFERROR(VLOOKUP({mp_ref},Parametros!$A:$E,{metric_col},FALSE),0)"
                 )
-            elif kind == "manual":
-                formula = 0
             else:
                 first_cost = f"{col_letter(c)}{row_of['Taxas Marketplace']}"
                 last_cost = f"{col_letter(c)}{row_of['Custos Expedição']}"
@@ -334,7 +343,7 @@ def build_resumo(
         row=note_row,
         column=label_col,
         value=(
-            "Taxas Marketplace está em 0 por enquanto. "
+            "Taxas Marketplace é calculada por pedido a partir das planilhas externas. "
             f"Imposto sobre vendas = Faturado × {sales_tax_rate_cell}. "
             "Custos Produtos = SOMASE de Items!custo_total pelo marketplace do "
             "cabeçalho. Lucro = Faturado − soma das demais linhas de valor. "
@@ -345,14 +354,70 @@ def build_resumo(
     ws.cell(row=note_row, column=label_col).font = NOTE_FONT
 
 
+def build_conciliacao(ws: Worksheet, stats: FeeJoinStats) -> None:
+    """Write the reconciliation counts behind the marketplace fee join."""
+    ws["A1"] = "Conciliação das Taxas de Marketplace"
+    ws["A1"].font = TITLE_FONT
+
+    header_row = 3
+    style_header_cell(ws.cell(row=header_row, column=1, value="Indicador"))
+    style_header_cell(ws.cell(row=header_row, column=2, value="Valor"))
+
+    lines: list[tuple[str, int | float, str]] = [
+        ("Notas fiscais processadas", stats.invoices, INT_FMT),
+        ("Notas com número de pedido (Bling)", stats.orders_found, INT_FMT),
+        ("Notas com taxa encontrada", stats.fees_found, INT_FMT),
+        ("Notas sem número de pedido no Bling", stats.invoices_without_order, INT_FMT),
+        (
+            "Pedidos ausentes nas planilhas dos marketplaces",
+            stats.orders_without_fee,
+            INT_FMT,
+        ),
+        ("Total de taxas de marketplace", stats.fees_total, MONEY_FMT),
+    ]
+
+    row = header_row + 1
+    for label, value, fmt in lines:
+        label_cell = ws.cell(row=row, column=1, value=label)
+        label_cell.font = LABEL_FONT
+        label_cell.border = BORDER
+        value_cell = ws.cell(row=row, column=2, value=value)
+        value_cell.number_format = fmt
+        value_cell.border = BORDER
+        row += 1
+
+    ws.column_dimensions["A"].width = 48
+    ws.column_dimensions["B"].width = 18
+
+    note_row = row + 1
+    ws.cell(
+        row=note_row,
+        column=1,
+        value=(
+            "O número do pedido vem do relatório do Bling e é procurado em todas as "
+            "planilhas de marketplace informadas. Notas sem pedido no Bling e pedidos "
+            "fora do período das planilhas ficam com taxa R$ 0."
+        ),
+    )
+    ws.cell(row=note_row, column=1).font = NOTE_FONT
+
+
 def build_report_from_data(
     invoices: list[dict[str, object]],
     items: list[dict[str, object]],
     output: Path | BinaryIO,
+    *,
+    bling_path: Path | None = None,
+    marketplace_paths: dict[str, Path] | None = None,
 ) -> dict[str, object]:
     if not invoices:
         raise ValueError("No invoices found in the input data.")
 
+    invoices, fee_stats = enrich_invoices_with_marketplace_fees(
+        invoices,
+        bling_path=bling_path,
+        marketplace_paths=marketplace_paths or {},
+    )
     invoice_headers = [h for h in invoices[0].keys() if h]
     item_headers = [h for h in items[0].keys() if h] if items else list(ITEM_HEADERS)
     invoice_cfops = cfop_by_invoice(items)
@@ -376,6 +441,7 @@ def build_report_from_data(
     ws_items = wb.create_sheet(ITEMS_SHEET)
     ws_par = wb.create_sheet("Parametros")
     ws_dre = wb.create_sheet("DRE")
+    ws_conc = wb.create_sheet("Conciliacao")
 
     global_rate_cells = build_parametros(ws_par, marketplaces, candaru_rates)
     det_col, last_row = build_detalhado(
@@ -398,6 +464,7 @@ def build_report_from_data(
         items_col=items_col,
         items_last_row=items_last_row,
     )
+    build_conciliacao(ws_conc, fee_stats)
 
     if isinstance(output, Path):
         output.parent.mkdir(parents=True, exist_ok=True)
@@ -408,15 +475,26 @@ def build_report_from_data(
         "items": len(items),
         "products": len(deduplicate_products(items)) if items else 0,
         "marketplaces": marketplaces,
+        "fee_orders_found": fee_stats.orders_found,
+        "fee_matches": fee_stats.fees_found,
     }
 
 
 def build_report(
     input_path: Path,
     output_path: Path,
+    *,
+    bling_path: Path | None = None,
+    marketplace_paths: dict[str, Path] | None = None,
 ) -> dict[str, object]:
     invoices, items = load_result(input_path)
-    return build_report_from_data(invoices, items, output_path)
+    return build_report_from_data(
+        invoices,
+        items,
+        output_path,
+        bling_path=bling_path,
+        marketplace_paths=marketplace_paths,
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:

@@ -59,10 +59,11 @@ MONEY_COLUMNS = {
     "valor_icms_bc",
     "valor_pis",
     "valor_cofins",
+    "taxa_marketplace",
     "IRPJ/CSLL",
     "CANDARU",
 }
-TEXT_COLUMNS = {"chave_nfe", "destinatario_doc"}
+TEXT_COLUMNS = {"chave_nfe", "destinatario_doc", "numero_pedido"}
 
 DET_WIDTHS = {
     "market_place": 16,
@@ -261,17 +262,6 @@ def sumifs_column(
     crit_rng = det_range(det_col, criteria_column, last_row)
     return f'=SUMIFS({sum_rng},{crit_rng},"{criteria}")'
 
-
-def sumifs_wildcard(
-    det_col: dict[str, str],
-    sum_column_name: str,
-    criteria_column: str,
-    pattern: str,
-    last_row: int,
-) -> str:
-    sum_rng = det_range(det_col, sum_column_name, last_row)
-    crit_rng = det_range(det_col, criteria_column, last_row)
-    return f'=SUMIFS({sum_rng},{crit_rng},"{pattern}")'
 
 
 def sum_return_cfops(det_col: dict[str, str], value_column: str, last_row: int) -> str:
