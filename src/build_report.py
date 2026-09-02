@@ -26,7 +26,7 @@ produced. The appended Detalhado columns are estimates computed from NF-e values
 
 ADS, Afiliado, Custos Expedição and Frete Marketplace are marketplace totals
 entered on Parametros (not allocated per NF-e). Amazon fees are 13.5% of
-valor_base_comissao and do not use a marketplace spreadsheet.
+valor_base_comissao (3% for Amazon B2B) and do not use a marketplace spreadsheet.
 """
 
 from __future__ import annotations
@@ -399,7 +399,7 @@ def build_resumo(
         value=(
             "Taxas Marketplace inclui as taxas calculadas e o Frete Marketplace "
             "informado na aba Parametros. Para Amazon, a taxa calculada é 13,5% "
-            "do valor da venda. "
+            "do valor da venda (3% no Amazon B2B). "
             f"Regime Especial está {'ATIVO' if regime_especial else 'INATIVO'}; "
             "quando ativo, o ICMS para fora de MG é 1,3% da base de ICMS. "
             f"Imposto sobre vendas = Faturado × {sales_tax_rate_cell}. "

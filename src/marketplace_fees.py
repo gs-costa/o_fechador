@@ -14,6 +14,7 @@ from xlrd import open_workbook
 ORDER_NUMBER_COLUMN = "numero_pedido"
 MARKETPLACE_FEE_COLUMN = "taxa_marketplace"
 AMAZON_FEE_RATE = 0.135
+AMAZON_B2B_FEE_RATE = 0.03
 
 _BLING_INVOICE_ALIASES = ("numero", "numero da nota", "numero nf", "nota fiscal")
 _BLING_ORDER_ALIASES = (
@@ -500,7 +501,9 @@ def _merge_fee_maps(
 
 
 def _amazon_fee(invoice: dict[str, object]) -> float:
-    return round(_money(invoice.get("valor_base_comissao")) * AMAZON_FEE_RATE, 2)
+    marketplace = _normalized_text(invoice.get("market_place"))
+    rate = AMAZON_B2B_FEE_RATE if "b2b" in marketplace else AMAZON_FEE_RATE
+    return round(_money(invoice.get("valor_base_comissao")) * rate, 2)
 
 
 def _uses_xml_order(marketplace: object) -> bool:
@@ -576,9 +579,10 @@ def enrich_invoices_with_marketplace_fees(
     """Add order number and marketplace fee to invoice copies.
 
     Every order is looked up in each supplied marketplace source, regardless
-    of the NF-e source folder. Amazon uses a fixed 13.5% of valor_base_comissao
-    and does not need a marketplace spreadsheet. Shopee Full and Mercado Livre
-    Full use xPed from the NF-e instead of the Bling report.
+    of the NF-e source folder. Amazon uses a fixed share of valor_base_comissao
+    (3% for Amazon B2B, 13.5% otherwise) and does not need a marketplace
+    spreadsheet. Shopee Full and Mercado Livre Full use xPed from the NF-e
+    instead of the Bling report.
     """
     orders_by_invoice = load_bling_orders(bling_path) if bling_path else {}
     fees_by_order = _fees_for_paths(marketplace_paths)
