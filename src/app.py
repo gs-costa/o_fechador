@@ -13,14 +13,21 @@ import streamlit as st
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from build_report import build_report_from_data
-from convert_nfe_xml_to_xlsx import ConversionResult, parse_marketplaces, write_consolidated_xlsx
+from convert_nfe_xml_to_xlsx import (
+    ConversionResult,
+    parse_marketplaces,
+    write_consolidated_xlsx,
+)
+from marketplace_fees import FEE_SOURCES
 from report_common import deduplicate_products, num
 
 DEFAULT_INPUT_DIR = Path("NFs")
+FOLDER_PATH_KEY = "nfe_folder_path"
 PREVIEW_COLUMNS = {
     "invoices": [
         "market_place",
         "numero",
+        "xped",
         "data_emissao",
         "valor_produtos",
         "valor_frete",
@@ -73,7 +80,9 @@ def _preview_rows(
 ) -> list[dict[str, object]]:
     preview: list[dict[str, object]] = []
     for row in rows:
-        preview.append({column: row.get(column, "") for column in columns if column in row})
+        preview.append(
+            {column: row.get(column, "") for column in columns if column in row}
+        )
     return preview
 
 
@@ -113,15 +122,84 @@ def _configure_page() -> None:
     )
 
 
+def _dialog_start_kwargs(initial: str) -> dict[str, str]:
+    if not initial:
+        return {}
+    start = Path(initial).expanduser()
+    if start.is_file():
+        return {"initialdir": str(start.parent)}
+    if start.is_dir():
+        return {"initialdir": str(start)}
+    if start.parent.is_dir():
+        return {"initialdir": str(start.parent)}
+    return {}
+
+
+def _pick_with_tkinter(picker: str, *, initial: str = "") -> str:
+    try:
+        import tkinter as tk
+        from tkinter import filedialog
+    except ImportError:
+        return ""
+
+    root = tk.Tk()
+    root.withdraw()
+    root.attributes("-topmost", True)
+    kwargs = _dialog_start_kwargs(initial)
+    if picker == "directory":
+        chosen = filedialog.askdirectory(**kwargs)
+    else:
+        chosen = filedialog.askopenfilename(
+            filetypes=[
+                ("Planilhas Excel", "*.xlsx *.xlsm *.xls"),
+                ("Excel", "*.xlsx"),
+                ("Excel 97-2003", "*.xls"),
+                ("Todos os arquivos", "*.*"),
+            ],
+            **kwargs,
+        )
+    root.destroy()
+    return chosen
+
+
+def _pick_local_directory(*, initial: str = "") -> str:
+    """Open the native folder dialog on the machine running Streamlit."""
+    return _pick_with_tkinter("directory", initial=initial)
+
+
+def _pick_local_file(*, initial: str = "") -> str:
+    """Open the native file dialog on the machine running Streamlit."""
+    return _pick_with_tkinter("file", initial=initial)
+
+
+def _assign_picked_file(key: str) -> None:
+    selected = _pick_local_file(initial=str(st.session_state.get(key, "")))
+    if selected:
+        st.session_state[key] = selected
+
+
 def _render_sidebar() -> Path | None:
     st.sidebar.title("O Fechador")
     st.sidebar.caption("Pré-visualize NF-e e exporte o relatório de fechamento.")
 
-    default_path = str(DEFAULT_INPUT_DIR.resolve()) if DEFAULT_INPUT_DIR.exists() else ""
+    if FOLDER_PATH_KEY not in st.session_state:
+        st.session_state[FOLDER_PATH_KEY] = (
+            str(DEFAULT_INPUT_DIR.resolve()) if DEFAULT_INPUT_DIR.exists() else ""
+        )
+
+    if st.sidebar.button("Selecionar pasta", use_container_width=True):
+        selected = _pick_local_directory(initial=st.session_state[FOLDER_PATH_KEY])
+        if selected:
+            st.session_state[FOLDER_PATH_KEY] = selected
+            st.rerun()
+
     input_path = st.sidebar.text_input(
         "Pasta com XMLs das NF-e",
-        value=default_path,
-        help="Pasta raiz com subpastas por marketplace, ou pasta única com arquivos .xml",
+        key=FOLDER_PATH_KEY,
+        help=(
+            "Pasta raiz com subpastas por marketplace, ou pasta única com "
+            "arquivos .xml. Use o botão acima para escolher no explorador."
+        ),
     )
 
     if st.sidebar.button("Carregar dados", type="primary", use_container_width=True):
@@ -187,7 +265,9 @@ def _render_preview(result: ConversionResult) -> None:
 
     with tab_produtos:
         st.subheader("Produtos para custos")
-        st.caption("Lista deduplicada por código + EAN. Os custos são preenchidos no XLSX exportado.")
+        st.caption(
+            "Lista deduplicada por código + EAN. Os custos são preenchidos no XLSX exportado."
+        )
         st.dataframe(products, use_container_width=True, hide_index=True)
 
     with tab_erros:
@@ -199,56 +279,69 @@ def _render_preview(result: ConversionResult) -> None:
             st.success("Nenhum arquivo com erro.")
 
 
-def _render_marketplace_sources(
-    result: ConversionResult,
-) -> tuple[Path | None, dict[str, Path]]:
-    marketplaces = sorted(
-        {
-            str(invoice.get("market_place", ""))
-            for invoice in result.invoices
-            if invoice.get("market_place")
-        }
-    )
+def _render_file_path_input(
+    label: str,
+    *,
+    key: str,
+    help_text: str,
+    placeholder: str,
+) -> str:
+    path_col, button_col = st.columns([4, 1], vertical_alignment="bottom")
+    with button_col:
+        st.button(
+            "Selecionar",
+            key=f"{key}::pick",
+            on_click=_assign_picked_file,
+            args=(key,),
+            use_container_width=True,
+        )
+    with path_col:
+        return st.text_input(
+            label,
+            key=key,
+            placeholder=placeholder,
+            help=help_text,
+        ).strip()
 
+
+def _render_marketplace_sources() -> tuple[Path | None, dict[str, Path]]:
     with st.expander("Planilhas para taxas de marketplace", expanded=True):
         st.caption(
-            "Informe o relatório do Bling e uma planilha para cada marketplace. "
-            "Cada pedido é procurado em todas as planilhas informadas, mesmo que a "
-            "pasta da NF-e misture marketplaces. Campos vazios geram taxa de "
-            "marketplace igual a R$ 0."
+            "Informe o relatório do Bling e as planilhas de taxas disponíveis. "
+            "Cada pedido é procurado em todas as planilhas informadas. Campos "
+            "vazios geram taxa de marketplace igual a R$ 0."
         )
-        bling_value = st.text_input(
+        bling_value = _render_file_path_input(
             "Caminho do relatório do Bling",
             key="bling_report_path",
             placeholder=r"C:\caminho\relatorio_bling.xls",
-            help=(
+            help_text=(
                 "A planilha deve conter Número e Número do pedido multiloja para "
                 "relacionar cada NF-e ao pedido."
             ),
-        ).strip()
+        )
 
-        marketplace_paths: dict[str, Path] = {}
-        for marketplace in marketplaces:
-            value = st.text_input(
-                f"Planilha de taxas — {marketplace}",
-                key=f"marketplace_report_path::{marketplace}",
+        marketplace_values: dict[str, str] = {}
+        for source in FEE_SOURCES:
+            marketplace_values[source.key] = _render_file_path_input(
+                f"Planilha de taxas — {source.label}",
+                key=f"marketplace_report_path::{source.key}",
                 placeholder=r"C:\caminho\planilha_marketplace.xlsx",
-                help=(
-                    "O formato é detectado pelas colunas. Shopee (aba Renda): Ver, "
-                    "Preço do produto e Quantia total lançada (R$). Mercado Livre: "
-                    "Receita por produtos e Total (BRL)."
-                ),
-            ).strip()
-            if value:
-                marketplace_paths[marketplace] = Path(value).expanduser()
+                help_text=source.help_text,
+            )
 
-        if marketplace_paths and not bling_value:
+        if any(marketplace_values.values()) and not bling_value:
             st.warning(
                 "Sem o relatório do Bling não é possível relacionar as NF-e aos "
                 "pedidos; as taxas permanecerão em R$ 0."
             )
 
     bling_path = Path(bling_value).expanduser() if bling_value else None
+    marketplace_paths = {
+        key: Path(value).expanduser()
+        for key, value in marketplace_values.items()
+        if value
+    }
     return bling_path, marketplace_paths
 
 
@@ -279,7 +372,9 @@ def _render_export(
     regime_especial: bool,
 ) -> None:
     st.subheader("Exportar")
-    st.caption("Baixe os arquivos somente quando estiver satisfeito com a pré-visualização.")
+    st.caption(
+        "Baixe os arquivos somente quando estiver satisfeito com a pré-visualização."
+    )
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     col_nfe, col_report = st.columns(2)
@@ -331,7 +426,9 @@ def main() -> None:
 
     result: ConversionResult | None = st.session_state.get("result")
     if result is None:
-        st.info("Informe a pasta com os XMLs na barra lateral e clique em **Carregar dados**.")
+        st.info(
+            "Selecione a pasta com os XMLs na barra lateral e clique em **Carregar dados**."
+        )
         with st.expander("Estrutura esperada da pasta"):
             st.code(
                 "NFs/\n"
@@ -346,7 +443,7 @@ def main() -> None:
 
     _render_metrics(result)
     st.divider()
-    bling_path, marketplace_paths = _render_marketplace_sources(result)
+    bling_path, marketplace_paths = _render_marketplace_sources()
     st.divider()
     regime_especial = _render_fiscal_options()
     st.divider()

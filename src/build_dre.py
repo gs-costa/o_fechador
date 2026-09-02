@@ -48,7 +48,7 @@ def build_dre(
     det_col: dict[str, str],
     last_row: int,
     *,
-    sales_tax_rate_cell: str = "Parametros!$G$3",
+    sales_tax_rate_cell: str = "Parametros!$I$3",
     items_col: dict[str, str] | None = None,
     items_last_row: int = 0,
 ) -> None:
@@ -180,7 +180,10 @@ def build_dre(
         "descontos": sum_column(det_col, SRC_DESCONTO, last_row),
         "impostos_vendas": f"={ref('receita_bruta_ajustada')}*{sales_tax_rate_cell}",
         "cmv": cmv_formula,
-        "taxas_marketplace": sum_column(det_col, "taxa_marketplace", last_row),
+        "taxas_marketplace": (
+            f"{sum_column(det_col, 'taxa_marketplace', last_row)}"
+            "+SUM(Parametros!$F:$F)"
+        ),
         "frete": sum_column(det_col, SRC_FRETE, last_row),
         "ads_ml": '=SUMIF(Parametros!$A:$A,"*Mercado Livre*",Parametros!$B:$B)',
         "ads_shopee": '=SUMIF(Parametros!$A:$A,"*Shopee*",Parametros!$B:$B)',
@@ -257,8 +260,8 @@ def build_dre(
             "Preencha os custos unitários na aba Custos Produtos; o CMV é calculado "
             "automaticamente na aba Items (quantidade x custo). Demais linhas com valor 0 "
             "podem ser preenchidas manualmente. Valores de receita e CANDARU vêm da aba "
-            "Detalhado. ADS, Afiliado e Custos Expedição vêm da aba Parametros "
-            "(valores em R$). "
+            "Detalhado. ADS, Afiliado, Custos Expedição e o frete que compõe as "
+            "Taxas de Marketplace vêm da aba Parametros (valores em R$). "
             f"Impostos sobre vendas usam a taxa em {sales_tax_rate_cell}."
         ),
     )
@@ -290,7 +293,7 @@ def add_dre_to_workbook(
     if "DRE" in wb.sheetnames:
         del wb["DRE"]
     ws_dre = wb.create_sheet("DRE")
-    sales_tax_cell = "Parametros!$G$3" if "Parametros" in wb.sheetnames else "0.04"
+    sales_tax_cell = "Parametros!$I$3" if "Parametros" in wb.sheetnames else "0.04"
 
     items_col: dict[str, str] | None = None
     items_last_row = 0

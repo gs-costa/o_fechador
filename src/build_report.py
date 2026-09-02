@@ -7,10 +7,10 @@ and ``Items``) and writes a new workbook with:
                 lucro), marketplaces as columns + Total.
   - Detalhado:  every column from the Invoices sheet (kept verbatim) followed by the
                 appended calculated columns (live Excel formulas).
-  - Parametros: ADS, Afiliado and Custos Expedição as period amounts (R$) entered
-                manually per marketplace; CANDARU and global rates (IRPJ/CSLL,
-                impostos sobre vendas) remain percentages. Resumo reads these
-                amounts from here.
+  - Parametros: ADS, Afiliado, Custos Expedição and Frete Marketplace as period
+                amounts (R$) entered manually per marketplace; CANDARU and global
+                rates (IRPJ/CSLL, impostos sobre vendas) remain percentages.
+                Resumo and DRE add Frete Marketplace into Taxas Marketplace.
   - Items:      line items from the NF-e workbook, with custo_unitario / custo_total.
   - Custos Produtos: deduplicated product list (codigo + ean) for manual cost entry.
   - DRE:        Demonstração do Resultado do Exercício (see ``build_dre.py``).
@@ -24,8 +24,9 @@ produced. The appended Detalhado columns are estimates computed from NF-e values
   CANDARU   = taxa_candaru(marketplace) * valor_base_comissao
               (3% when market_place contains AMAZON B2B or TIKTOK SHOP; 7% otherwise)
 
-ADS, Afiliado and Custos Expedição are marketplace totals entered on Parametros
-(not allocated per NF-e).
+ADS, Afiliado, Custos Expedição and Frete Marketplace are marketplace totals
+entered on Parametros (not allocated per NF-e). Amazon fees are 13.5% of
+valor_base_comissao and do not use a marketplace spreadsheet.
 """
 
 from __future__ import annotations
@@ -98,8 +99,15 @@ def build_parametros(
     ws["A1"] = "Parâmetros por Marketplace"
     ws["A1"].font = TITLE_FONT
     for col, name in zip(
-        "ABCDE",
-        ("Marketplace", "ADS", "Afiliado", "Taxa CANDARU", "Custos Expedição"),
+        "ABCDEF",
+        (
+            "Marketplace",
+            "ADS",
+            "Afiliado",
+            "Taxa CANDARU",
+            "Custos Expedição",
+            "Frete Marketplace",
+        ),
     ):
         cell = ws[f"{col}2"]
         cell.value = name
@@ -111,47 +119,51 @@ def build_parametros(
         ws[f"C{idx}"] = 0
         ws[f"D{idx}"] = candaru_rates.get(mp, CANDARU_RATE_DEFAULT)
         ws[f"E{idx}"] = 0
+        ws[f"F{idx}"] = 0
         ws[f"B{idx}"].number_format = MONEY_FMT
         ws[f"C{idx}"].number_format = MONEY_FMT
         ws[f"D{idx}"].number_format = PCT_FMT
         ws[f"E{idx}"].number_format = MONEY_FMT
+        ws[f"F{idx}"].number_format = MONEY_FMT
 
-    ws["F2"] = "Taxa IRPJ/CSLL"
-    ws["F2"].font = LABEL_FONT
-    ws["G2"] = DEFAULT_IRPJ_RATE
-    ws["G2"].number_format = PCT_FMT
+    ws["H2"] = "Taxa IRPJ/CSLL"
+    ws["H2"].font = LABEL_FONT
+    ws["I2"] = DEFAULT_IRPJ_RATE
+    ws["I2"].number_format = PCT_FMT
 
-    ws["F3"] = "Taxa Impostos sobre Vendas"
-    ws["F3"].font = LABEL_FONT
-    ws["G3"] = DEFAULT_SALES_TAX_RATE
-    ws["G3"].number_format = PCT_FMT
+    ws["H3"] = "Taxa Impostos sobre Vendas"
+    ws["H3"].font = LABEL_FONT
+    ws["I3"] = DEFAULT_SALES_TAX_RATE
+    ws["I3"].number_format = PCT_FMT
 
-    ws["F4"] = "Regime Especial"
-    ws["F4"].font = LABEL_FONT
-    ws["G4"] = "ATIVO" if regime_especial else "INATIVO"
-    ws["G4"].font = LABEL_FONT
+    ws["H4"] = "Regime Especial"
+    ws["H4"].font = LABEL_FONT
+    ws["I4"] = "ATIVO" if regime_especial else "INATIVO"
+    ws["I4"].font = LABEL_FONT
     if regime_especial:
-        ws["G4"].fill = TOTAL_FILL
+        ws["I4"].fill = TOTAL_FILL
 
-    ws["F5"] = "Taxa ICMS Regime Especial"
-    ws["F5"].font = LABEL_FONT
-    ws["G5"] = DEFAULT_SPECIAL_ICMS_RATE
-    ws["G5"].number_format = PCT_FMT
+    ws["H5"] = "Taxa ICMS Regime Especial"
+    ws["H5"].font = LABEL_FONT
+    ws["I5"] = DEFAULT_SPECIAL_ICMS_RATE
+    ws["I5"].number_format = PCT_FMT
 
     ws.column_dimensions["A"].width = 22
     ws.column_dimensions["B"].width = 16
     ws.column_dimensions["C"].width = 16
     ws.column_dimensions["D"].width = 14
     ws.column_dimensions["E"].width = 18
-    ws.column_dimensions["F"].width = 26
-    ws.column_dimensions["G"].width = 12
+    ws.column_dimensions["F"].width = 20
+    ws.column_dimensions["H"].width = 26
+    ws.column_dimensions["I"].width = 12
     ws.freeze_panes = "A3"
     note_row = 4 + len(marketplaces)
     ws.cell(
         row=note_row,
         column=1,
         value=(
-            "Preencha ADS, Afiliado e Custos Expedição em R$ (valor do período). "
+            "Preencha ADS, Afiliado, Custos Expedição e Frete Marketplace em R$ "
+            "(valor do período). O Frete Marketplace compõe Taxas Marketplace. "
             "A aba Resumo busca esses valores automaticamente. "
             "Taxa CANDARU permanece em percentual. Quando o Regime Especial está "
             "ATIVO, vendas para fora de MG usam 1,3% da base de ICMS."
@@ -159,10 +171,10 @@ def build_parametros(
     )
     ws.cell(row=note_row, column=1).font = NOTE_FONT
     return {
-        "irpj": "$G$2",
-        "sales_tax": "$G$3",
-        "special_tax_status": "$G$4",
-        "special_icms_rate": "$G$5",
+        "irpj": "$I$2",
+        "sales_tax": "$I$3",
+        "special_tax_status": "$I$4",
+        "special_icms_rate": "$I$5",
     }
 
 
@@ -234,7 +246,7 @@ def build_resumo(
     det_col: dict[str, str],
     *,
     items_col: dict[str, str] | None = None,
-    sales_tax_rate_cell: str = "Parametros!$G$3",
+    sales_tax_rate_cell: str = "Parametros!$I$3",
     regime_especial: bool = False,
 ) -> None:
     ws["A1"] = "Fechamento - Resumo por Marketplace"
@@ -268,7 +280,7 @@ def build_resumo(
         ("Faturado", "sum", det_col[SRC_BASE_COMISSAO], MONEY_FMT),
         (
             "Taxas Marketplace",
-            "sum",
+            "marketplace_fees",
             det_col[MARKETPLACE_FEE_COLUMN],
             MONEY_FMT,
         ),
@@ -320,6 +332,12 @@ def build_resumo(
             elif kind == "sum":
                 rng = f"{det}!${metric_col}:${metric_col}"
                 formula = f"=SUMIF({crit},{mp_ref},{rng})"
+            elif kind == "marketplace_fees":
+                rng = f"{det}!${metric_col}:${metric_col}"
+                formula = (
+                    f"=SUMIF({crit},{mp_ref},{rng})"
+                    f"+IFERROR(VLOOKUP({mp_ref},Parametros!$A:$F,6,FALSE),0)"
+                )
             elif kind == "items_sum":
                 if items_mp and items_custo:
                     formula = (
@@ -332,7 +350,7 @@ def build_resumo(
                 formula = f"={col_letter(c)}{faturado_row}*{sales_tax_rate_cell}"
             elif kind == "param":
                 formula = (
-                    f"=IFERROR(VLOOKUP({mp_ref},Parametros!$A:$E,{metric_col},FALSE),0)"
+                    f"=IFERROR(VLOOKUP({mp_ref},Parametros!$A:$F,{metric_col},FALSE),0)"
                 )
             else:
                 first_cost = f"{col_letter(c)}{row_of['Taxas Marketplace']}"
@@ -379,7 +397,9 @@ def build_resumo(
         row=note_row,
         column=label_col,
         value=(
-            "Taxas Marketplace é calculada por pedido a partir das planilhas externas. "
+            "Taxas Marketplace inclui as taxas calculadas e o Frete Marketplace "
+            "informado na aba Parametros. Para Amazon, a taxa calculada é 13,5% "
+            "do valor da venda. "
             f"Regime Especial está {'ATIVO' if regime_especial else 'INATIVO'}; "
             "quando ativo, o ICMS para fora de MG é 1,3% da base de ICMS. "
             f"Imposto sobre vendas = Faturado × {sales_tax_rate_cell}. "
@@ -403,9 +423,9 @@ def build_conciliacao(ws: Worksheet, stats: FeeJoinStats) -> None:
 
     lines: list[tuple[str, int | float, str]] = [
         ("Notas fiscais processadas", stats.invoices, INT_FMT),
-        ("Notas com número de pedido (Bling)", stats.orders_found, INT_FMT),
+        ("Notas com número de pedido", stats.orders_found, INT_FMT),
         ("Notas com taxa encontrada", stats.fees_found, INT_FMT),
-        ("Notas sem número de pedido no Bling", stats.invoices_without_order, INT_FMT),
+        ("Notas sem número de pedido", stats.invoices_without_order, INT_FMT),
         (
             "Pedidos ausentes nas planilhas dos marketplaces",
             stats.orders_without_fee,
@@ -432,9 +452,10 @@ def build_conciliacao(ws: Worksheet, stats: FeeJoinStats) -> None:
         row=note_row,
         column=1,
         value=(
-            "O número do pedido vem do relatório do Bling e é procurado em todas as "
-            "planilhas de marketplace informadas. Notas sem pedido no Bling e pedidos "
-            "fora do período das planilhas ficam com taxa R$ 0."
+            "O número do pedido vem do relatório do Bling, exceto Shopee Full e "
+            "Mercado Livre Full, que usam o xPed da NF-e. O pedido é procurado em "
+            "todas as planilhas de marketplace informadas. Notas sem pedido e "
+            "pedidos fora do período das planilhas ficam com taxa R$ 0."
         ),
     )
     ws.cell(row=note_row, column=1).font = NOTE_FONT

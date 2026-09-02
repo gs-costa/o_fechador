@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
-from collections.abc import Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -13,6 +13,7 @@ from xlrd import open_workbook
 
 ORDER_NUMBER_COLUMN = "numero_pedido"
 MARKETPLACE_FEE_COLUMN = "taxa_marketplace"
+AMAZON_FEE_RATE = 0.135
 
 _BLING_INVOICE_ALIASES = ("numero", "numero da nota", "numero nf", "nota fiscal")
 _BLING_ORDER_ALIASES = (
@@ -54,6 +55,34 @@ _MERCADO_LIVRE_REVENUE_ALIASES = (
     "receita por produtos brl",
 )
 _MERCADO_LIVRE_TOTAL_ALIASES = ("total", "total brl")
+_MAGALU_ORDER_ALIASES = ("numero do pedido", "n do pedido", "pedido")
+_MAGALU_SALE_ALIASES = (
+    "valor total dos itens do pedido",
+    "valor de venda",
+)
+_MAGALU_NET_ALIASES = (
+    "valor liquido estimado a receber",
+    "valor de venda comissao plataforma",
+)
+MAGALU_SHIPPING_FEE = 35.90
+_TIKTOK_TYPE_ALIASES = ("tipo de transacao", "transaction type")
+_TIKTOK_ORDER_ALIASES = (
+    "id do pedido ajuste",
+    "id do pedido",
+    "order id",
+)
+_TIKTOK_SALES_ALIASES = (
+    "vendas liquidas dos produtos",
+    "vendas liquidas",
+    "net product sales",
+)
+_TIKTOK_SETTLED_ALIASES = (
+    "valor total a ser liquidado",
+    "total settlement amount",
+)
+_BELEZA_NA_WEB_ORDER_ALIASES = ("numero do pedido", "n do pedido")
+_BELEZA_NA_WEB_PRODUCTS_ALIASES = ("valor dos produtos",)
+_BELEZA_NA_WEB_NET_ALIASES = ("valor repasse", "valor do repasse")
 
 
 @dataclass(frozen=True)
@@ -63,21 +92,31 @@ class FeeJoinStats:
     invoices: int
     orders_found: int
     fees_found: int
+    orders_without_fee: int
     fees_total: float
 
     @property
     def invoices_without_order(self) -> int:
         return self.invoices - self.orders_found
 
-    @property
-    def orders_without_fee(self) -> int:
-        return self.orders_found - self.fees_found
+
+def _repaired_text(text: str) -> str:
+    """Undo UTF-8 bytes that were stored as Latin-1 code points."""
+    try:
+        return text.encode("latin-1").decode("utf-8")
+    except (UnicodeDecodeError, UnicodeEncodeError):
+        return text
 
 
 def _normalized_text(value: object) -> str:
-    text = unicodedata.normalize("NFKD", str(value or "").strip().casefold())
-    without_accents = "".join(char for char in text if not unicodedata.combining(char))
-    return " ".join(re.sub(r"[^a-z0-9]+", " ", without_accents).split())
+    text = _repaired_text(str(value or "").strip())
+    text = unicodedata.normalize("NFKD", text.casefold())
+    without_format = "".join(
+        char
+        for char in text
+        if not unicodedata.combining(char) and unicodedata.category(char) != "Cf"
+    )
+    return " ".join(re.sub(r"[^a-z0-9]+", " ", without_format).split())
 
 
 def _normalized_id(value: object) -> str:
@@ -201,6 +240,7 @@ def _sum_fees(
     left: str,
     right: str,
     filter_column: str | None = None,
+    extra_per_order: float = 0.0,
 ) -> dict[str, float]:
     fees: dict[str, float] = {}
     for row in rows:
@@ -216,56 +256,309 @@ def _sum_fees(
             _value(row, columns[right])
         )
         fees[order] = round(fees.get(order, 0.0) + fee, 2)
+    if extra_per_order:
+        return {
+            order: round(fee + extra_per_order, 2) for order, fee in fees.items()
+        }
     return fees
 
 
-def load_marketplace_fees(path: Path) -> dict[str, float]:
-    """Detect a Shopee or Mercado Livre export and return fee totals by order."""
+def _load_fees(
+    path: Path,
+    *,
+    marketplace: str,
+    definitions: dict[str, tuple[str, ...]],
+    expected_columns: str,
+    left: str,
+    right: str,
+    filter_column: str | None = None,
+    extra_per_order: float = 0.0,
+) -> dict[str, float]:
+    """Load fees from a known marketplace export after validating its columns."""
     if not path.is_file():
-        raise FileNotFoundError(f"Planilha do marketplace não encontrada: {path}")
-
-    shopee_definitions = {
-        "type": _SHOPEE_TYPE_ALIASES,
-        "order": _SHOPEE_ORDER_ALIASES,
-        "subtotal": _SHOPEE_SUBTOTAL_ALIASES,
-        "income": _SHOPEE_INCOME_ALIASES,
-    }
-    mercado_livre_definitions = {
-        "order": _MERCADO_LIVRE_ORDER_ALIASES,
-        "revenue": _MERCADO_LIVRE_REVENUE_ALIASES,
-        "total": _MERCADO_LIVRE_TOTAL_ALIASES,
-    }
+        raise FileNotFoundError(
+            f"Planilha de taxas da {marketplace} não encontrada: {path}"
+        )
 
     for _sheet_name, rows in _workbook_rows(path):
         iterator = iter(rows)
         for row in iterator:
-            shopee_columns = _required_columns(row, shopee_definitions)
-            if shopee_columns is not None:
+            columns = _required_columns(row, definitions)
+            if columns is not None:
                 return _sum_fees(
                     iterator,
-                    shopee_columns,
-                    left="subtotal",
-                    right="income",
-                    filter_column="type",
-                )
-
-            mercado_livre_columns = _required_columns(
-                row, mercado_livre_definitions
-            )
-            if mercado_livre_columns is not None:
-                return _sum_fees(
-                    iterator,
-                    mercado_livre_columns,
-                    left="revenue",
-                    right="total",
+                    columns,
+                    left=left,
+                    right=right,
+                    filter_column=filter_column,
+                    extra_per_order=extra_per_order,
                 )
 
     raise ValueError(
-        f"Não foi possível reconhecer a planilha '{path.name}'. Para Shopee (aba "
-        "Renda, cabeçalhos na linha 3), são necessárias as colunas Ver, ID do "
-        "pedido, Preço do produto e Quantia total lançada (R$). Para Mercado "
-        "Livre, número da venda, Receita por produtos e Total (BRL)."
+        f"A planilha '{path.name}' não é um relatório de taxas válido da "
+        f"{marketplace}. São necessárias as colunas: {expected_columns}."
     )
+
+
+def load_shopee_fees(path: Path) -> dict[str, float]:
+    """Load Shopee fees by order from its Renda export."""
+    return _load_fees(
+        path,
+        marketplace="Shopee",
+        definitions={
+            "type": _SHOPEE_TYPE_ALIASES,
+            "order": _SHOPEE_ORDER_ALIASES,
+            "subtotal": _SHOPEE_SUBTOTAL_ALIASES,
+            "income": _SHOPEE_INCOME_ALIASES,
+        },
+        expected_columns=(
+            "Ver, ID do pedido, Preço do produto e Quantia total lançada (R$)"
+        ),
+        left="subtotal",
+        right="income",
+        filter_column="type",
+    )
+
+
+def load_mercado_livre_fees(path: Path) -> dict[str, float]:
+    """Load Mercado Livre fees by order from its sales export."""
+    return _load_fees(
+        path,
+        marketplace="Mercado Livre",
+        definitions={
+            "order": _MERCADO_LIVRE_ORDER_ALIASES,
+            "revenue": _MERCADO_LIVRE_REVENUE_ALIASES,
+            "total": _MERCADO_LIVRE_TOTAL_ALIASES,
+        },
+        expected_columns="número da venda, Receita por produtos e Total (BRL)",
+        left="revenue",
+        right="total",
+    )
+
+
+def load_magalu_fees(path: Path) -> dict[str, float]:
+    """Load Magalu fees by order from its sales export.
+
+    Taxa = Valor total dos itens do pedido − Valor líquido estimado a
+    receber + R$ 35,90 de envio, cobrado uma vez por pedido.
+    """
+    return _load_fees(
+        path,
+        marketplace="Magalu",
+        definitions={
+            "order": _MAGALU_ORDER_ALIASES,
+            "sale": _MAGALU_SALE_ALIASES,
+            "net": _MAGALU_NET_ALIASES,
+        },
+        expected_columns=(
+            "Número do pedido, Valor total dos itens do pedido e Valor "
+            "líquido estimado a receber"
+        ),
+        left="sale",
+        right="net",
+        extra_per_order=MAGALU_SHIPPING_FEE,
+    )
+
+
+def load_tiktok_fees(path: Path) -> dict[str, float]:
+    """Load TikTok Shop fees by order from its income export.
+
+    Taxa = Vendas líquidas dos produtos − Valor total a ser liquidado.
+    """
+    return _load_fees(
+        path,
+        marketplace="TikTok",
+        definitions={
+            "type": _TIKTOK_TYPE_ALIASES,
+            "order": _TIKTOK_ORDER_ALIASES,
+            "sales": _TIKTOK_SALES_ALIASES,
+            "settled": _TIKTOK_SETTLED_ALIASES,
+        },
+        expected_columns=(
+            "Tipo de transação, ID do pedido/ajuste, Vendas líquidas dos "
+            "produtos e Valor total a ser liquidado"
+        ),
+        left="sales",
+        right="settled",
+        filter_column="type",
+    )
+
+
+def load_beleza_na_web_fees(path: Path) -> dict[str, float]:
+    """Load Beleza na Web fees by order from its repasse export.
+
+    Taxa = Valor dos produtos − Valor repasse.
+    """
+    return _load_fees(
+        path,
+        marketplace="Beleza na Web",
+        definitions={
+            "order": _BELEZA_NA_WEB_ORDER_ALIASES,
+            "products": _BELEZA_NA_WEB_PRODUCTS_ALIASES,
+            "net": _BELEZA_NA_WEB_NET_ALIASES,
+        },
+        expected_columns="Número do Pedido, Valor dos produtos e Valor repasse",
+        left="products",
+        right="net",
+    )
+
+
+@dataclass(frozen=True)
+class MarketplaceFeeSource:
+    """Fixed fee spreadsheet for one marketplace export format."""
+
+    key: str
+    label: str
+    loader: Callable[[Path], dict[str, float]]
+    help_text: str
+
+
+FEE_SOURCES: tuple[MarketplaceFeeSource, ...] = (
+    MarketplaceFeeSource(
+        key="shopee",
+        label="Shopee",
+        loader=load_shopee_fees,
+        help_text=(
+            "Exportação Renda com as colunas Ver, ID do pedido, Preço do "
+            "produto e Quantia total lançada (R$)."
+        ),
+    ),
+    MarketplaceFeeSource(
+        key="mercado_livre",
+        label="Mercado Livre",
+        loader=load_mercado_livre_fees,
+        help_text=(
+            "Exportação com as colunas número da venda, Receita por produtos "
+            "e Total (BRL)."
+        ),
+    ),
+    MarketplaceFeeSource(
+        key="magalu",
+        label="Magalu",
+        loader=load_magalu_fees,
+        help_text=(
+            "Relatório de vendas/pedidos com Número do pedido, Valor total "
+            "dos itens do pedido e Valor líquido estimado a receber. Taxa "
+            "= itens − líquido + R$ 35,90 de envio por pedido."
+        ),
+    ),
+    MarketplaceFeeSource(
+        key="tiktok",
+        label="TikTok",
+        loader=load_tiktok_fees,
+        help_text=(
+            "Exportação de renda (aba Detalhes do pedido) com ID do "
+            "pedido/ajuste, Vendas líquidas dos produtos e Valor total a "
+            "ser liquidado. Taxa = vendas líquidas − valor liquidado."
+        ),
+    ),
+    MarketplaceFeeSource(
+        key="beleza_na_web",
+        label="Beleza na Web",
+        loader=load_beleza_na_web_fees,
+        help_text=(
+            "Planilha de repasse com Número do Pedido, Valor dos produtos e "
+            "Valor repasse. Taxa = produtos − repasse."
+        ),
+    ),
+)
+FEE_SOURCE_BY_KEY = {source.key: source for source in FEE_SOURCES}
+
+
+def _fees_for_paths(marketplace_paths: dict[str, Path]) -> dict[str, float]:
+    sources: list[tuple[str, dict[str, float]]] = []
+    for key, path in marketplace_paths.items():
+        source = FEE_SOURCE_BY_KEY.get(key)
+        if source is None:
+            raise ValueError(f"Marketplace de taxas desconhecido: {key}")
+        sources.append((source.label, source.loader(path)))
+    return _merge_fee_maps(sources)
+
+
+def _merge_fee_maps(
+    sources: list[tuple[str, dict[str, float]]],
+) -> dict[str, float]:
+    merged: dict[str, float] = {}
+    owners: dict[str, str] = {}
+    for marketplace, fees in sources:
+        for order, fee in fees.items():
+            if order in owners:
+                raise ValueError(
+                    f"O pedido {order} aparece nas planilhas de "
+                    f"{owners[order]} e {marketplace}; não é possível "
+                    "determinar qual taxa usar."
+                )
+            owners[order] = marketplace
+            merged[order] = fee
+    return merged
+
+
+def _amazon_fee(invoice: dict[str, object]) -> float:
+    return round(_money(invoice.get("valor_base_comissao")) * AMAZON_FEE_RATE, 2)
+
+
+def _uses_xml_order(marketplace: object) -> bool:
+    """Shopee Full and Mercado Livre Full store the order id in NF-e xPed."""
+    name = _normalized_text(marketplace)
+    if "full" not in name:
+        return False
+    return "shopee" in name or "mercado livre" in name
+
+
+def _is_beleza_na_web(marketplace: object) -> bool:
+    return "beleza na web" in _normalized_text(marketplace)
+
+
+def _is_magalu(marketplace: object) -> bool:
+    name = _normalized_text(marketplace)
+    return "magalu" in name or "magazine luiza" in name
+
+
+def _beleza_na_web_order_id(order: str) -> str:
+    """Keep the Beleza na Web order number after the Bling hyphen prefix."""
+    if "-" not in order:
+        return order
+    suffix = order.rsplit("-", 1)[-1]
+    return suffix or order
+
+
+def _magalu_order_id(order: str) -> str:
+    """Magalu exports prefix orders with LU-; Bling usually omits it."""
+    normalized = order.casefold()
+    if normalized.startswith("lu-"):
+        return normalized
+    return f"lu-{normalized}"
+
+
+def _order_for_invoice(
+    invoice: dict[str, object],
+    orders_by_invoice: dict[str, str],
+) -> str:
+    if _uses_xml_order(invoice.get("market_place")):
+        return _normalized_id(invoice.get("xped"))
+    invoice_number = _normalized_invoice_number(invoice.get("numero"))
+    order = orders_by_invoice.get(invoice_number, "")
+    if not order:
+        return ""
+    if _is_beleza_na_web(invoice.get("market_place")):
+        return _beleza_na_web_order_id(order)
+    if _is_magalu(invoice.get("market_place")):
+        return _magalu_order_id(order)
+    return order
+
+
+def _fee_for_invoice(
+    invoice: dict[str, object],
+    *,
+    order: str,
+    fees_by_order: dict[str, float],
+) -> tuple[float, bool]:
+    """Return the invoice fee and whether a rate was applied."""
+    if "amazon" in _normalized_text(invoice.get("market_place")):
+        return _amazon_fee(invoice), True
+    if order and order in fees_by_order:
+        return fees_by_order[order], True
+    return 0.0, False
 
 
 def enrich_invoices_with_marketplace_fees(
@@ -276,28 +569,31 @@ def enrich_invoices_with_marketplace_fees(
 ) -> tuple[list[dict[str, object]], FeeJoinStats]:
     """Add order number and marketplace fee to invoice copies.
 
-    An order is looked up in every supplied spreadsheet, not only in the one
-    given for its own NF-e folder: a folder often mixes orders from more than
-    one marketplace.
+    Every order is looked up in each supplied marketplace source, regardless
+    of the NF-e source folder. Amazon uses a fixed 13.5% of valor_base_comissao
+    and does not need a marketplace spreadsheet. Shopee Full and Mercado Livre
+    Full use xPed from the NF-e instead of the Bling report.
     """
     orders_by_invoice = load_bling_orders(bling_path) if bling_path else {}
-    fees_by_order: dict[str, float] = {}
-    for path in marketplace_paths.values():
-        fees_by_order.update(load_marketplace_fees(path))
+    fees_by_order = _fees_for_paths(marketplace_paths)
 
     enriched: list[dict[str, object]] = []
     orders_found = 0
     fees_found = 0
+    orders_without_fee = 0
     fees_total = 0.0
     for invoice in invoices:
         result = dict(invoice)
-        invoice_number = _normalized_invoice_number(invoice.get("numero"))
-        order = orders_by_invoice.get(invoice_number, "")
-        fee = fees_by_order.get(order, 0.0) if order else 0.0
+        order = _order_for_invoice(invoice, orders_by_invoice)
+        fee, matched = _fee_for_invoice(
+            invoice, order=order, fees_by_order=fees_by_order
+        )
 
         if order:
             orders_found += 1
-        if order and order in fees_by_order:
+            if not matched:
+                orders_without_fee += 1
+        if matched:
             fees_found += 1
             fees_total += fee
 
@@ -309,5 +605,6 @@ def enrich_invoices_with_marketplace_fees(
         invoices=len(invoices),
         orders_found=orders_found,
         fees_found=fees_found,
+        orders_without_fee=orders_without_fee,
         fees_total=round(fees_total, 2),
     )

@@ -16,6 +16,7 @@ Use --per-file to also write one .xlsx next to each .xml.
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
@@ -33,6 +34,7 @@ from build_report import build_report
 from report_common import ITEM_HEADERS
 
 NFE_NS = {"nfe": "http://www.portalfiscal.inf.br/nfe"}
+_XPED_IN_INFADPROD = re.compile(r"xped\s*:\s*(\S+)", re.IGNORECASE)
 
 INVOICE_HEADERS = [
     "market_place",
@@ -54,6 +56,7 @@ INVOICE_HEADERS = [
     "valor_pis",
     "valor_cofins",
     "status",
+    "xped",
     "arquivo",
 ]
 
@@ -79,6 +82,14 @@ def _doc_from_person(person: ET.Element | None) -> str:
     if person is None:
         return ""
     return _text(person, "nfe:CNPJ") or _text(person, "nfe:CPF")
+
+
+def _xped_from_det(det: ET.Element, prod: ET.Element | None) -> str:
+    inf_ad = _text(det, "nfe:infAdProd")
+    match = _XPED_IN_INFADPROD.search(inf_ad)
+    if match:
+        return match.group(1)
+    return _text(prod, "nfe:xPed")
 
 
 def parse_nfe(
@@ -137,6 +148,7 @@ def parse_nfe(
     items: list[dict[str, str | float]] = []
     for det in inf_nfe.findall("nfe:det", NFE_NS):
         prod = det.find("nfe:prod", NFE_NS)
+        xped = _xped_from_det(det, prod)
         items.append(
             {
                 "market_place": market_place,
@@ -155,10 +167,15 @@ def parse_nfe(
                 "valor_total": float(_text(prod, "nfe:vProd", "0") or 0),
                 "destinatario_doc": invoice["destinatario_doc"],
                 "destinatario_uf": invoice["destinatario_uf"],
+                "xped": xped,
                 "arquivo": xml_path.name,
             }
         )
 
+    invoice["xped"] = next(
+        (str(item["xped"]) for item in items if item.get("xped")),
+        "",
+    )
     return invoice, items
 
 

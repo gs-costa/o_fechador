@@ -67,7 +67,7 @@ MONEY_COLUMNS = {
     "IRPJ/CSLL",
     "CANDARU",
 }
-TEXT_COLUMNS = {"chave_nfe", "destinatario_doc", "numero_pedido"}
+TEXT_COLUMNS = {"chave_nfe", "destinatario_doc", "numero_pedido", "xped"}
 
 DET_WIDTHS = {
     "market_place": 16,
@@ -116,6 +116,7 @@ ITEM_HEADERS = [
     "valor_total",
     "destinatario_doc",
     "destinatario_uf",
+    "xped",
     "arquivo",
 ]
 
@@ -125,7 +126,7 @@ PRODUCT_COST_HEADERS = ["codigo", "ean", "descricao", "custo", "chave"]
 ITEMS_ADDED_COLUMNS = ["custo_unitario", "custo_total"]
 
 ITEM_MONEY_COLUMNS = {"valor_unitario", "valor_total", "custo_unitario", "custo_total"}
-ITEM_TEXT_COLUMNS = {"chave_nfe", "codigo", "ean", "destinatario_doc"}
+ITEM_TEXT_COLUMNS = {"chave_nfe", "codigo", "ean", "destinatario_doc", "xped"}
 
 ITEM_WIDTHS = {
     "market_place": 16,
