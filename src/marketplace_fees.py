@@ -43,18 +43,16 @@ _SHOPEE_INCOME_ALIASES = (
     "order earnings",
 )
 _MERCADO_LIVRE_ORDER_ALIASES = (
-    "n de venda",
-    "n o de venda",
+    "numero da operacao",
+    "n da operacao",
     "numero de venda",
     "numero da venda",
     "id da venda",
-    "order id",
 )
-_MERCADO_LIVRE_REVENUE_ALIASES = (
-    "receita por produtos",
-    "receita por produtos brl",
+_MERCADO_LIVRE_FEE_ALIASES = (
+    "valor total de tarifas desconto ja aplicado",
+    "valor total de tarifas",
 )
-_MERCADO_LIVRE_TOTAL_ALIASES = ("total", "total brl")
 _MAGALU_ORDER_ALIASES = ("numero do pedido", "n do pedido", "pedido")
 _MAGALU_SALE_ALIASES = (
     "valor total dos itens do pedido",
@@ -238,7 +236,7 @@ def _sum_fees(
     columns: dict[str, int],
     *,
     left: str,
-    right: str,
+    right: str | None = None,
     filter_column: str | None = None,
     extra_per_order: float = 0.0,
 ) -> dict[str, float]:
@@ -252,9 +250,12 @@ def _sum_fees(
         order = _normalized_id(_value(row, columns["order"]))
         if not order:
             continue
-        fee = _money(_value(row, columns[left])) - _money(
-            _value(row, columns[right])
-        )
+        if right is None:
+            fee = _money(_value(row, columns[left]))
+        else:
+            fee = _money(_value(row, columns[left])) - _money(
+                _value(row, columns[right])
+            )
         fees[order] = round(fees.get(order, 0.0) + fee, 2)
     if extra_per_order:
         return {
@@ -270,7 +271,7 @@ def _load_fees(
     definitions: dict[str, tuple[str, ...]],
     expected_columns: str,
     left: str,
-    right: str,
+    right: str | None = None,
     filter_column: str | None = None,
     extra_per_order: float = 0.0,
 ) -> dict[str, float]:
@@ -321,18 +322,22 @@ def load_shopee_fees(path: Path) -> dict[str, float]:
 
 
 def load_mercado_livre_fees(path: Path) -> dict[str, float]:
-    """Load Mercado Livre fees by order from its sales export."""
+    """Load Mercado Livre fees by order from the sales reconciliation export.
+
+    Taxa = Valor total de tarifas (desconto já aplicado). Linhas com o mesmo
+    Número da operação são somadas.
+    """
     return _load_fees(
         path,
         marketplace="Mercado Livre",
         definitions={
             "order": _MERCADO_LIVRE_ORDER_ALIASES,
-            "revenue": _MERCADO_LIVRE_REVENUE_ALIASES,
-            "total": _MERCADO_LIVRE_TOTAL_ALIASES,
+            "fee": _MERCADO_LIVRE_FEE_ALIASES,
         },
-        expected_columns="número da venda, Receita por produtos e Total (BRL)",
-        left="revenue",
-        right="total",
+        expected_columns=(
+            "Número da operação e Valor total de tarifas (desconto já aplicado)"
+        ),
+        left="fee",
     )
 
 
@@ -428,8 +433,9 @@ FEE_SOURCES: tuple[MarketplaceFeeSource, ...] = (
         label="Mercado Livre",
         loader=load_mercado_livre_fees,
         help_text=(
-            "Exportação com as colunas número da venda, Receita por produtos "
-            "e Total (BRL)."
+            "Relatório de conciliação por vendas com Número da operação e "
+            "Valor total de tarifas (desconto já aplicado). Pedidos repetidos "
+            "somam as tarifas."
         ),
     ),
     MarketplaceFeeSource(
