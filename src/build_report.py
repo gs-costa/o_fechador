@@ -452,9 +452,10 @@ def build_conciliacao(ws: Worksheet, stats: FeeJoinStats) -> None:
         row=note_row,
         column=1,
         value=(
-            "O número do pedido vem do relatório do Bling, exceto Shopee Full e "
-            "Mercado Livre Full, que usam o xPed da NF-e. O pedido é procurado em "
-            "todas as planilhas de marketplace informadas. Notas sem pedido e "
+            "Para Shopee e Mercado Livre, o número do pedido é obtido primeiro "
+            "da NF-e; quando não está disponível, é usado o relatório do Bling. "
+            "Nos demais marketplaces, o pedido vem do Bling. O pedido é procurado "
+            "em todas as planilhas de marketplace informadas. Notas sem pedido e "
             "pedidos fora do período das planilhas ficam com taxa R$ 0."
         ),
     )

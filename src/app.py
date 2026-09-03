@@ -332,8 +332,9 @@ def _render_marketplace_sources() -> tuple[Path | None, dict[str, Path]]:
 
         if any(marketplace_values.values()) and not bling_value:
             st.warning(
-                "Sem o relatório do Bling não é possível relacionar as NF-e aos "
-                "pedidos; as taxas permanecerão em R$ 0."
+                "Sem o relatório do Bling, somente as NF-e que "
+                "contêm o número do pedido poderão ser relacionadas; "
+                "as demais taxas permanecerão em R$ 0."
             )
 
     bling_path = Path(bling_value).expanduser() if bling_value else None

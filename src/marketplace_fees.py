@@ -50,6 +50,7 @@ _MERCADO_LIVRE_ORDER_ALIASES = (
     "numero da venda",
     "id da venda",
 )
+_MERCADO_LIVRE_PACKAGE_ALIASES = ("numero do pacote",)
 _MERCADO_LIVRE_FEE_ALIASES = (
     "valor total de tarifas desconto ja aplicado",
     "valor total de tarifas",
@@ -240,6 +241,7 @@ def _sum_fees(
     right: str | None = None,
     filter_column: str | None = None,
     extra_per_order: float = 0.0,
+    identifier_columns: tuple[str, ...] = ("order",),
 ) -> dict[str, float]:
     fees: dict[str, float] = {}
     for row in rows:
@@ -248,8 +250,12 @@ def _sum_fees(
             if row_type not in {"order", "pedido"}:
                 continue
 
-        order = _normalized_id(_value(row, columns["order"]))
-        if not order:
+        identifiers = {
+            identifier
+            for column in identifier_columns
+            if (identifier := _normalized_id(_value(row, columns[column])))
+        }
+        if not identifiers:
             continue
         if right is None:
             fee = _money(_value(row, columns[left]))
@@ -257,7 +263,8 @@ def _sum_fees(
             fee = _money(_value(row, columns[left])) - _money(
                 _value(row, columns[right])
             )
-        fees[order] = round(fees.get(order, 0.0) + fee, 2)
+        for identifier in identifiers:
+            fees[identifier] = round(fees.get(identifier, 0.0) + fee, 2)
     if extra_per_order:
         return {
             order: round(fee + extra_per_order, 2) for order, fee in fees.items()
@@ -275,6 +282,7 @@ def _load_fees(
     right: str | None = None,
     filter_column: str | None = None,
     extra_per_order: float = 0.0,
+    identifier_columns: tuple[str, ...] = ("order",),
 ) -> dict[str, float]:
     """Load fees from a known marketplace export after validating its columns."""
     if not path.is_file():
@@ -294,6 +302,7 @@ def _load_fees(
                     right=right,
                     filter_column=filter_column,
                     extra_per_order=extra_per_order,
+                    identifier_columns=identifier_columns,
                 )
 
     raise ValueError(
@@ -326,19 +335,22 @@ def load_mercado_livre_fees(path: Path) -> dict[str, float]:
     """Load Mercado Livre fees by order from the sales reconciliation export.
 
     Taxa = Valor total de tarifas (desconto já aplicado). Linhas com o mesmo
-    Número da operação são somadas.
+    Número da operação ou Número do pacote são somadas.
     """
     return _load_fees(
         path,
         marketplace="Mercado Livre",
         definitions={
             "order": _MERCADO_LIVRE_ORDER_ALIASES,
+            "package": _MERCADO_LIVRE_PACKAGE_ALIASES,
             "fee": _MERCADO_LIVRE_FEE_ALIASES,
         },
         expected_columns=(
-            "Número da operação e Valor total de tarifas (desconto já aplicado)"
+            "Número da operação, Número do pacote e Valor total de tarifas "
+            "(desconto já aplicado)"
         ),
         left="fee",
+        identifier_columns=("order", "package"),
     )
 
 
@@ -434,9 +446,9 @@ FEE_SOURCES: tuple[MarketplaceFeeSource, ...] = (
         label="Mercado Livre",
         loader=load_mercado_livre_fees,
         help_text=(
-            "Relatório de conciliação por vendas com Número da operação e "
-            "Valor total de tarifas (desconto já aplicado). Pedidos repetidos "
-            "somam as tarifas."
+            "Relatório de conciliação por vendas com Número da operação, Número "
+            "do pacote e Valor total de tarifas (desconto já aplicado). O join "
+            "aceita operação ou pacote; ocorrências repetidas somam as tarifas."
         ),
     ),
     MarketplaceFeeSource(
@@ -507,10 +519,8 @@ def _amazon_fee(invoice: dict[str, object]) -> float:
 
 
 def _uses_xml_order(marketplace: object) -> bool:
-    """Shopee Full and Mercado Livre Full store the order id in NF-e xPed."""
+    """Shopee and Mercado Livre may store the order id in the NF-e."""
     name = _normalized_text(marketplace)
-    if "full" not in name:
-        return False
     return "shopee" in name or "mercado livre" in name
 
 
@@ -544,7 +554,10 @@ def _order_for_invoice(
     orders_by_invoice: dict[str, str],
 ) -> str:
     if _uses_xml_order(invoice.get("market_place")):
-        return _normalized_id(invoice.get("xped"))
+        xml_order = _normalized_id(invoice.get("xped"))
+        if xml_order:
+            return xml_order
+
     invoice_number = _normalized_invoice_number(invoice.get("numero"))
     order = orders_by_invoice.get(invoice_number, "")
     if not order:
@@ -581,8 +594,8 @@ def enrich_invoices_with_marketplace_fees(
     Every order is looked up in each supplied marketplace source, regardless
     of the NF-e source folder. Amazon uses a fixed share of valor_base_comissao
     (3% for Amazon B2B, 13.5% otherwise) and does not need a marketplace
-    spreadsheet. Shopee Full and Mercado Livre Full use xPed from the NF-e
-    instead of the Bling report.
+    spreadsheet. Shopee and Mercado Livre first use the order number extracted
+    from the NF-e and fall back to the Bling report when it is unavailable.
     """
     orders_by_invoice = load_bling_orders(bling_path) if bling_path else {}
     fees_by_order = _fees_for_paths(marketplace_paths)

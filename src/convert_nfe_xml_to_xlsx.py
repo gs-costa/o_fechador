@@ -92,6 +92,28 @@ def _xped_from_det(det: ET.Element, prod: ET.Element | None) -> str:
     return _text(prod, "nfe:xPed")
 
 
+def _invoice_xped(
+    inf_nfe: ET.Element,
+    *,
+    market_place: str,
+    item_xpeds: list[str],
+) -> str:
+    """Return the marketplace order number from its expected NF-e location."""
+    marketplace = market_place.casefold()
+    is_full = "full" in marketplace
+
+    if "mercado livre" in marketplace and not is_full:
+        return _text(inf_nfe, "nfe:compra/nfe:xPed")
+
+    if "shopee" in marketplace and not is_full:
+        for node in inf_nfe.findall(".//nfe:xPed", NFE_NS):
+            if node.text and node.text.strip():
+                return node.text.strip()
+        return ""
+
+    return next((xped for xped in item_xpeds if xped), "")
+
+
 def parse_nfe(
     xml_path: Path,
     *,
@@ -172,9 +194,10 @@ def parse_nfe(
             }
         )
 
-    invoice["xped"] = next(
-        (str(item["xped"]) for item in items if item.get("xped")),
-        "",
+    invoice["xped"] = _invoice_xped(
+        inf_nfe,
+        market_place=market_place,
+        item_xpeds=[str(item["xped"]) for item in items if item.get("xped")],
     )
     return invoice, items
 
